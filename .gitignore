@@ -1,0 +1,11 @@
+**/target/
+.idea/
+*.iml
+.DS_Store
+.env
+.superpowers/
+.tools/
+*.log
+AGENTS.md
+agents.md
+docs/superpowers/
