@@ -9,3 +9,5 @@
 AGENTS.md
 agents.md
 docs/superpowers/
+__pycache__/
+*.pyc

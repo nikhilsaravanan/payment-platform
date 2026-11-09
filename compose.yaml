@@ -1,0 +1,61 @@
+name: payment-platform
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: platform_admin
+      POSTGRES_PASSWORD: platform-admin-local
+      POSTGRES_DB: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/init-databases.sql:/docker-entrypoint-initdb.d/01-databases.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U platform_admin -d postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  ledger:
+    build:
+      context: .
+      args:
+        SERVICE: ledger-service
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/ledger
+      DB_USER: ledger
+      DB_PASSWORD: ledger-local
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/9090'"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+
+  payment:
+    build:
+      context: .
+      args:
+        SERVICE: payment-service
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/payments
+      DB_USER: payments
+      DB_PASSWORD: payments-local
+      LEDGER_HOST: ledger
+    ports:
+      - "127.0.0.1:${PAYMENT_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ledger:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/8080'"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+volumes:
+  postgres_data:

@@ -1,0 +1,9 @@
+.git
+.tools
+.superpowers
+**/target
+**/*.log
+.env
+AGENTS.md
+agents.md
+docs/superpowers
