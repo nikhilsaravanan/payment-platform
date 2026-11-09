@@ -3,6 +3,7 @@ spring:
     name: ledger-service
   main:
     web-application-type: none
+    keep-alive: true
   flyway:
     locations: classpath:db/ledger
   datasource:

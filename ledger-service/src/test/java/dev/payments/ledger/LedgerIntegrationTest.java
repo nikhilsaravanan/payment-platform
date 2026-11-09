@@ -15,6 +15,10 @@ import java.util.*;
 import java.util.concurrent.*;
 import io.grpc.*;
 import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
+import org.junit.jupiter.api.io.TempDir;
+import java.nio.file.*;
+import java.time.Duration;
+import static org.awaitility.Awaitility.await;
 import static org.assertj.core.api.Assertions.*;
 
 @Testcontainers
@@ -33,6 +37,20 @@ class LedgerIntegrationTest {
 
     @Test void applicationStartsGrpcListener() {
         assertThat(grpc.port()).isPositive();
+    }
+
+    @Test void standaloneProcessStaysAliveAfterStartup(@TempDir Path temp) throws Exception {
+        Path output=temp.resolve("ledger.log");
+        var process=new ProcessBuilder(Path.of(System.getProperty("java.home"),"bin","java").toString(),
+                "-cp",System.getProperty("surefire.test.class.path",System.getProperty("java.class.path")),
+                LedgerApplication.class.getName(),"--spring.datasource.url="+DB.getJdbcUrl(),
+                "--spring.datasource.username="+DB.getUsername(),"--spring.datasource.password="+DB.getPassword(),
+                "--ledger.grpc.port=0").redirectErrorStream(true).redirectOutput(output.toFile()).start();
+        try {
+            await().atMost(Duration.ofSeconds(20)).until(()->Files.readString(output).contains("Started LedgerApplication") || !process.isAlive());
+            assertThat(process.waitFor(1,TimeUnit.SECONDS)).withFailMessage(Files.readString(output)).isFalse();
+            assertThat(Files.readString(output)).contains("Started LedgerApplication");
+        } finally {process.destroyForcibly();process.waitFor(5,TimeUnit.SECONDS);}
     }
 
     static Transfer transfer() {
