@@ -1,0 +1,27 @@
+spring:
+  application:
+    name: payment-service
+  flyway:
+    locations: classpath:db/payment
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/payments}
+    username: ${DB_USER:payments}
+    password: ${DB_PASSWORD:payments-local}
+    hikari:
+      maximum-pool-size: 10
+      transaction-isolation: TRANSACTION_READ_COMMITTED
+      connection-init-sql: SET statement_timeout = '5s'
+  jackson:
+    deserialization:
+      accept-float-as-int: false
+      fail-on-unknown-properties: true
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: never
+server:
+  port: ${PORT:8080}
