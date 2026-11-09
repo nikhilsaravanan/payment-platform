@@ -1,0 +1,27 @@
+syntax = "proto3";
+package payments.v1;
+option java_package = "dev.payments.contract";
+option java_multiple_files = true;
+
+service Ledger {
+  rpc PostTransfer(Transfer) returns (Journal);
+  rpc GetTransfer(TransferId) returns (Journal);
+}
+message Transfer {
+  string payment_id = 1;
+  string source_account = 2;
+  string destination_account = 3;
+  int64 amount_minor = 4;
+  string currency = 5;
+}
+message TransferId { string payment_id = 1; }
+message Entry {
+  string account = 1;
+  string side = 2;
+  int64 amount_minor = 3;
+  string currency = 4;
+}
+message Journal {
+  Transfer transfer = 1;
+  repeated Entry entries = 2;
+}

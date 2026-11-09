@@ -1,0 +1,18 @@
+spring:
+  application:
+    name: ledger-service
+  main:
+    web-application-type: none
+  flyway:
+    locations: classpath:db/ledger
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/ledger}
+    username: ${DB_USER:ledger}
+    password: ${DB_PASSWORD:ledger-local}
+    hikari:
+      maximum-pool-size: 10
+      transaction-isolation: TRANSACTION_READ_COMMITTED
+      connection-init-sql: SET statement_timeout = '5s'
+ledger:
+  grpc:
+    port: ${GRPC_PORT:9090}
