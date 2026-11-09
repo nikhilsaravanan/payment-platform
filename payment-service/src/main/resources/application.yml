@@ -25,3 +25,11 @@ management:
       show-details: never
 server:
   port: ${PORT:8080}
+ledger:
+  host: ${LEDGER_HOST:localhost}
+  port: ${LEDGER_PORT:9090}
+  deadline-millis: ${LEDGER_DEADLINE_MILLIS:2000}
+payments:
+  worker:
+    enabled: ${PAYMENT_WORKER_ENABLED:true}
+    poll-millis: ${PAYMENT_POLL_MILLIS:250}
