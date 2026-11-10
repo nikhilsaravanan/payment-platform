@@ -96,8 +96,8 @@ class PaymentRecoveryTest {
     @Test void committedLedgerWithLostResponseIsReplayedWithoutDuplicates() throws Exception {
         var dropFirst=new AtomicBoolean(true);
         start(new LedgerGrpc.LedgerImplBase() {
-            @Override public void postTransfer(Transfer request,StreamObserver<Journal> response) {
-                var result=ledgerStore.post(request);
+            @Override public void submitTransfer(Transfer request,StreamObserver<TransferResult> response) {
+                var result=ledgerStore.submit(request);
                 if(dropFirst.getAndSet(false)) response.onError(Status.UNAVAILABLE.withDescription("response lost after commit").asRuntimeException());
                 else {response.onNext(result);response.onCompleted();}
             }
@@ -125,11 +125,11 @@ class PaymentRecoveryTest {
     @Test void competingWorkersSkipLockedPaymentAndCreateOneLedgerEffect() throws Exception {
         var entered=new CountDownLatch(1);var release=new CountDownLatch(1);
         start(new LedgerGrpc.LedgerImplBase() {
-            @Override public void postTransfer(Transfer request,StreamObserver<Journal> response) {
+            @Override public void submitTransfer(Transfer request,StreamObserver<TransferResult> response) {
                 entered.countDown();
                 try {
                     if(!release.await(5,TimeUnit.SECONDS)) throw new IllegalStateException("test coordination timeout");
-                    response.onNext(ledgerStore.post(request));response.onCompleted();
+                    response.onNext(ledgerStore.submit(request));response.onCompleted();
                 } catch(Exception e) { response.onError(Status.INTERNAL.asRuntimeException()); }
             }
         },0);
@@ -145,5 +145,57 @@ class PaymentRecoveryTest {
             assertThat(first.get(5,TimeUnit.SECONDS)).isTrue();
         }
         assertOneJournal(p);
+    }
+
+    @Test void lostRejectionResponseRemainsRejectedAfterFunding() throws Exception {
+        new AccountStore(ledger).create("empty","USD");
+        var drop=new AtomicBoolean(true);
+        start(new LedgerGrpc.LedgerImplBase() {
+            @Override public void submitTransfer(Transfer request,StreamObserver<TransferResult> response) {
+                var result=ledgerStore.submit(request);
+                if(drop.getAndSet(false)) response.onError(Status.UNAVAILABLE.asRuntimeException());
+                else {response.onNext(result);response.onCompleted();}
+            }
+        },0);
+        var p=store.create("rejected-payment",new CreatePayment("empty","merchant",500L,"USD")).payment();
+        worker().processOne();
+        assertThat(store.get(p.id()).status()).isEqualTo("PENDING");
+        assertThat(ledger.queryForObject("SELECT outcome FROM transfer_decisions WHERE payment_id=?",String.class,p.id())).isEqualTo("INSUFFICIENT_FUNDS");
+        ledgerStore.fund(FundingRequest.newBuilder().setIdempotencyKey("later-funding").setAccountId("empty").setAmountMinor(1000).setCurrency("USD").build());
+        makeDue();worker().processOne();
+        assertThat(store.get(p.id()).status()).isEqualTo("REJECTED");
+        assertThat(store.get(p.id()).rejectionReason()).isEqualTo("INSUFFICIENT_FUNDS");
+        assertThat(store.get(p.id()).rejectedAt()).isNotNull();
+        assertThat(store.get(p.id()).completedAt()).isNull();
+        assertThat(new AccountStore(ledger).get("empty").getBalanceMinor()).isEqualTo("1000");
+        assertThat(ledger.queryForObject("SELECT count(*) FROM journals WHERE payment_id=?",Long.class,p.id())).isZero();
+        assertThat(worker().processOne()).isFalse();
+    }
+
+    @Test void missingAccountIsTerminalAndSameKeyStillReturnsRejectedPayment() throws Exception {
+        start(new LedgerRpc(ledgerStore,new AccountStore(ledger)),0);
+        var body=new CreatePayment("alice","missing",500L,"USD");
+        var p=store.create("missing-account-payment",body).payment();
+        worker().processOne();
+        assertThat(store.get(p.id()).status()).isEqualTo("REJECTED");
+        assertThat(store.get(p.id()).rejectionReason()).isEqualTo("ACCOUNT_NOT_FOUND");
+        assertThat(store.create("missing-account-payment",body).payment()).isEqualTo(store.get(p.id()));
+        assertThat(worker().processOne()).isFalse();
+    }
+
+    @Test void unknownLedgerOutcomeStaysPending() throws Exception { assertMalformedOutcomeRetries(false); }
+    @Test void responseForAnotherPaymentStaysPending() throws Exception { assertMalformedOutcomeRetries(true); }
+
+    void assertMalformedOutcomeRetries(boolean wrongId) throws Exception {
+        start(new LedgerGrpc.LedgerImplBase() {
+            @Override public void submitTransfer(Transfer request,StreamObserver<TransferResult> response) {
+                response.onNext(TransferResult.newBuilder().setPaymentId(wrongId?UUID.randomUUID().toString():request.getPaymentId())
+                        .setOutcome(wrongId?TransferOutcome.POSTED:TransferOutcome.TRANSFER_OUTCOME_UNSPECIFIED).build());
+                response.onCompleted();
+            }
+        },0);
+        var p=create();worker().processOne();
+        assertThat(store.get(p.id()).status()).isEqualTo("PENDING");
+        assertThat(payments.queryForObject("SELECT last_error FROM payments WHERE id=?",String.class,p.id())).isEqualTo("DATA_LOSS");
     }
 }

@@ -2,6 +2,7 @@ package dev.payments.payment;
 
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
+import dev.payments.contract.TransferOutcome;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -36,8 +37,11 @@ public class PaymentWorker {
             if(rows.isEmpty()) return false;
             var p=rows.getFirst();
             try {
-                ledger.post(p);
-                jdbc.update("UPDATE payments SET status='COMPLETED',completed_at=clock_timestamp(),last_error=NULL WHERE id=?",p.id());
+                var outcome=ledger.post(p);
+                if(outcome==TransferOutcome.POSTED)
+                    jdbc.update("UPDATE payments SET status='COMPLETED',completed_at=clock_timestamp(),last_error=NULL WHERE id=?",p.id());
+                else
+                    jdbc.update("UPDATE payments SET status='REJECTED',rejected_at=clock_timestamp(),rejection_reason=?,last_error=NULL WHERE id=?",outcome.name(),p.id());
             } catch(StatusRuntimeException e) {
                 var code=e.getStatus().getCode();
                 if(code==Status.Code.INVALID_ARGUMENT || code==Status.Code.ALREADY_EXISTS)

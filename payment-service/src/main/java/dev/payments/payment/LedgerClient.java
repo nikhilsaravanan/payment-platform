@@ -3,6 +3,7 @@ package dev.payments.payment;
 import dev.payments.contract.*;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
+import io.grpc.Status;
 import jakarta.annotation.PreDestroy;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -21,10 +22,15 @@ public class LedgerClient implements AutoCloseable {
         channel=ManagedChannelBuilder.forAddress(host,port).usePlaintext().build();
         stub=LedgerGrpc.newBlockingStub(channel);this.deadlineMillis=deadlineMillis;
     }
-    public void post(Payment p) {
-        stub.withDeadlineAfter(deadlineMillis,TimeUnit.MILLISECONDS).postTransfer(Transfer.newBuilder()
+    public TransferOutcome post(Payment p) {
+        var result=stub.withDeadlineAfter(deadlineMillis,TimeUnit.MILLISECONDS).submitTransfer(Transfer.newBuilder()
                 .setPaymentId(p.id().toString()).setSourceAccount(p.sourceAccount()).setDestinationAccount(p.destinationAccount())
                 .setAmountMinor(p.amountMinor()).setCurrency(p.currency()).build());
+        if(!result.getPaymentId().equals(p.id().toString()) ||
+                (result.getOutcome()!=TransferOutcome.POSTED && result.getOutcome()!=TransferOutcome.INSUFFICIENT_FUNDS
+                        && result.getOutcome()!=TransferOutcome.ACCOUNT_NOT_FOUND))
+            throw Status.DATA_LOSS.withDescription("Invalid ledger outcome").asRuntimeException();
+        return result.getOutcome();
     }
     public AccountResult createAccount(String id,String currency) {
         return stub.withDeadlineAfter(deadlineMillis,TimeUnit.MILLISECONDS)

@@ -55,6 +55,9 @@ class AccountApiTest {
     @AfterAll static void stop() throws Exception {if(server!=null){server.shutdownNow();server.awaitTermination(5,TimeUnit.SECONDS);}}
     @Autowired TestRestTemplate http;
     @Autowired ObjectMapper json;
+    @Autowired JdbcTemplate paymentJdbc;
+    @Autowired TransactionTemplate paymentTx;
+    @Autowired LedgerClient client;
 
     String account() {
         String id=UUID.randomUUID().toString();
@@ -109,6 +112,36 @@ class AccountApiTest {
         assertThat(post("/funding",funding(id,1000),key).getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
         assertThat(post("/funding",funding(id,1000),key).getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(json.readTree(http.getForObject("/accounts/"+id,String.class)).path("balanceMinor").asLong()).isEqualTo(1000);
+    }
+
+    @Test void invalidCustomerIdsAreRejectedBeforeCallingUnavailableLedger() {
+        unavailable.set(true);
+        try {
+            assertThat(post("/accounts","{\"accountId\":\"__simulation_issuer__\",\"currency\":\"USD\"}",null).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(post("/funding",funding("__simulation_issuer__",100),"invalid-funding").getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(http.getForEntity("/accounts/__simulation_issuer__",String.class).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        } finally {unavailable.set(false);}
+    }
+
+    @Test void rejectedPaymentIsRetrievedAndReplayedWithoutSpendingLaterFunding() throws Exception {
+        String from=account(),to=account(),key=UUID.randomUUID().toString();
+        String body="{\"sourceAccount\":\""+from+"\",\"destinationAccount\":\""+to+"\",\"amountMinor\":500,\"currency\":\"USD\"}";
+        var first=post("/payments",body,key);assertThat(first.getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
+        var path="/payments/"+json.readTree(first.getBody()).path("id").asText();
+        var worker=new PaymentWorker(paymentJdbc,paymentTx,client);worker.processOne();
+        var rejected=json.readTree(http.getForObject(path,String.class));
+        assertThat(rejected.path("status").asText()).isEqualTo("REJECTED");
+        assertThat(rejected.path("rejectionReason").asText()).isEqualTo("INSUFFICIENT_FUNDS");
+        assertThat(rejected.path("rejectedAt").isTextual()).isTrue();
+        assertThat(post("/funding",funding(from,500),UUID.randomUUID().toString()).getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        var replay=post("/payments",body,key);assertThat(replay.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(json.readTree(replay.getBody())).isEqualTo(rejected);
+        assertThat(worker.processOne()).isFalse();
+        assertThat(json.readTree(http.getForObject("/accounts/"+from,String.class)).path("balanceMinor").asLong()).isEqualTo(500);
+        assertThat(post("/payments",body,UUID.randomUUID().toString()).getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
+        worker.processOne();
+        assertThat(json.readTree(http.getForObject("/accounts/"+from,String.class)).path("balanceMinor").asLong()).isZero();
+        assertThat(json.readTree(http.getForObject("/accounts/"+to,String.class)).path("balanceMinor").asLong()).isEqualTo(500);
     }
 
     ResponseEntity<String> post(String path,String body,String key) {

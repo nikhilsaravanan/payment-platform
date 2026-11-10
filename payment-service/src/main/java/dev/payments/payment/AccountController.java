@@ -28,22 +28,31 @@ public class AccountController {
 
     @PostMapping("/accounts")
     public ResponseEntity<Balance> create(@Valid @RequestBody CreateAccount request) {
+        requireCustomerId(request.accountId());
         var result=ledger.createAccount(request.accountId(),request.currency());
         return ResponseEntity.status(result.getCreated()?201:200).body(Balance.from(result.getAccount()));
     }
     @GetMapping("/accounts/{accountId}")
-    public Balance get(@PathVariable String accountId) { return Balance.from(ledger.getAccount(accountId)); }
+    public Balance get(@PathVariable String accountId) {
+        requireCustomerId(accountId);
+        return Balance.from(ledger.getAccount(accountId));
+    }
     // Query form supports opaque IDs containing slashes, which servlet path routing cannot safely accept.
     @GetMapping("/accounts")
     public Balance getByQuery(@RequestParam String accountId) { return get(accountId); }
 
     @PostMapping("/funding")
     public ResponseEntity<Funding> fund(@RequestHeader("Idempotency-Key") String key,@Valid @RequestBody FundAccount request) {
+        requireCustomerId(request.accountId());
         if(!key.matches("[\\x21-\\x7E][\\x20-\\x7E]{0,199}")) throw new IllegalArgumentException("Invalid Idempotency-Key");
         var result=ledger.fund(key,request.accountId(),request.amountMinor(),request.currency());
         if(result.getOutcome()==TransferOutcome.ACCOUNT_NOT_FOUND) throw Status.NOT_FOUND.asRuntimeException();
         if(result.getOutcome()!=TransferOutcome.POSTED) throw Status.DATA_LOSS.asRuntimeException();
         return ResponseEntity.status(result.getCreated()?201:200).body(new Funding(result.getFundingId(),result.getAccountId(),
                 result.getAmountMinor(),result.getCurrency()));
+    }
+    private static void requireCustomerId(String id) {
+        if(id==null || id.isBlank() || id.length()>100 || id.equals("__simulation_issuer__"))
+            throw new IllegalArgumentException("Invalid customer account ID");
     }
 }

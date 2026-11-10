@@ -13,7 +13,8 @@ public class PaymentStore {
     static final RowMapper<Payment> MAPPER=(rs,n)->new Payment(rs.getObject("id",UUID.class),
             rs.getString("source_account"),rs.getString("destination_account"),rs.getLong("amount_minor"),
             rs.getString("currency"),rs.getString("status"),rs.getTimestamp("created_at").toInstant(),
-            rs.getTimestamp("completed_at")==null ? null : rs.getTimestamp("completed_at").toInstant());
+            rs.getTimestamp("completed_at")==null ? null : rs.getTimestamp("completed_at").toInstant(),
+            rs.getTimestamp("rejected_at")==null ? null : rs.getTimestamp("rejected_at").toInstant(),rs.getString("rejection_reason"));
 
     public PaymentStore(JdbcTemplate jdbc,TransactionTemplate tx) { this.jdbc=jdbc;this.tx=tx; }
     public Created create(String key,CreatePayment request) {

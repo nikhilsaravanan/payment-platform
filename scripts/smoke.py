@@ -7,6 +7,7 @@ import time
 import uuid
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -92,6 +93,34 @@ def main():
     assert request(base, "/accounts/" + source)[1]["balanceMinor"] == 5000 - spent
     assert request(base, "/accounts/" + destination)[1]["balanceMinor"] == spent
     print("PASS final account balances", flush=True)
+    remaining = request(base, "/accounts/" + source)[1]["balanceMinor"]
+    status, rejected = request(base, "/payments", dict(body, amountMinor=remaining + 1), str(uuid.uuid4()))
+    assert status == 202, (status, rejected)
+    rejected_path = "/payments/" + rejected["id"]
+    eventually(lambda: request(base, rejected_path)[1]["status"] == "REJECTED", "insufficient-funds rejection")
+    assert request(base, rejected_path)[1]["rejectionReason"] == "INSUFFICIENT_FUNDS"
+    assert request(base, "/accounts/" + source)[1]["balanceMinor"] == remaining
+    print("PASS insufficient-funds terminal rejection", flush=True)
+
+    # Distinct HTTP requests share a limited funded source; all must reach a terminal outcome.
+    a, b = "race-" + uuid.uuid4().hex, "receiver-" + uuid.uuid4().hex
+    for account in (a, b):
+        assert request(base, "/accounts", {"accountId": account, "currency": "USD"})[0] == 201
+    assert request(base, "/funding", {"accountId": a, "amountMinor": 1000, "currency": "USD"}, str(uuid.uuid4()))[0] == 201
+    competing = dict(body, sourceAccount=a, destinationAccount=b, amountMinor=500)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        submissions = list(pool.map(lambda _: request(base, "/payments", competing, str(uuid.uuid4())), range(8)))
+    outcomes = []
+    for status, result in submissions:
+        assert status == 202, (status, result)
+        path = "/payments/" + result["id"]
+        eventually(lambda: request(base, path)[1]["status"] in ("COMPLETED", "REJECTED"), "concurrent payment outcome")
+        outcomes.append(request(base, path)[1])
+    assert sum(p["status"] == "COMPLETED" for p in outcomes) == 2, outcomes
+    assert sum(p["status"] == "REJECTED" and p["rejectionReason"] == "INSUFFICIENT_FUNDS" for p in outcomes) == 6, outcomes
+    assert request(base, "/accounts/" + a)[1]["balanceMinor"] == 0
+    assert request(base, "/accounts/" + b)[1]["balanceMinor"] == 1000
+    print("PASS 8 distinct payments: 2 completed, 6 rejected; no overspending", flush=True)
 
 
 if __name__ == "__main__":

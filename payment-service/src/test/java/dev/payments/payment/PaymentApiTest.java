@@ -56,7 +56,8 @@ class PaymentApiTest {
                 BODY.replace("2500","-1"),BODY.replace("2500","1000000000001"),
                 BODY.replace("2500","9223372036854775808"),BODY.replace("2500","2.5"),
                 BODY.replace("\"alice\"","null"),BODY.replace("alice"," "),
-                BODY.replace("merchant","alice"),BODY.replace("USD","EUR"),BODY.replace("alice","a".repeat(101)));
+                BODY.replace("merchant","alice"),BODY.replace("USD","EUR"),BODY.replace("alice","a".repeat(101)),
+                BODY.replace("alice","__simulation_issuer__"));
         for(var body:badBodies) assertThat(post(UUID.randomUUID().toString(),body).getStatusCode()).as(body).isEqualTo(HttpStatus.BAD_REQUEST);
         for(var key:Arrays.asList(null,"","a".repeat(201))) assertThat(post(key,BODY).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM payments",Long.class)).isEqualTo(before);

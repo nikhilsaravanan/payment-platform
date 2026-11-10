@@ -11,4 +11,9 @@ public record CreatePayment(
     @AssertTrue(message="Source and destination must differ")
     @JsonIgnore
     public boolean isDistinctAccounts() { return sourceAccount==null || !sourceAccount.equals(destinationAccount); }
+    @AssertTrue(message="Only customer accounts can create payments")
+    @JsonIgnore
+    public boolean isCustomerAccounts() {
+        return !"__simulation_issuer__".equals(sourceAccount) && !"__simulation_issuer__".equals(destinationAccount);
+    }
 }
