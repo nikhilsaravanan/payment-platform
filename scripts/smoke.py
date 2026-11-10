@@ -50,7 +50,20 @@ def main():
     args = parser.parse_args()
     base = args.base_url.rstrip("/")
     eventually(lambda: request(base, "/actuator/health")[0] == 200, "healthy API")
-    body = {"sourceAccount": "alice", "destinationAccount": "merchant", "amountMinor": 2500, "currency": "USD"}
+    source, destination = "payer-" + uuid.uuid4().hex, "merchant-" + uuid.uuid4().hex
+    for account in (source, destination):
+        status, result = request(base, "/accounts", {"accountId": account, "currency": "USD"})
+        assert status == 201 and result["balanceMinor"] == 0, (status, result)
+    funding = {"accountId": source, "amountMinor": 5000, "currency": "USD"}
+    funding_key = str(uuid.uuid4())
+    status, funded = request(base, "/funding", funding, funding_key)
+    assert status == 201, (status, funded)
+    status, replay = request(base, "/funding", funding, funding_key)
+    assert status == 200 and replay == funded, (status, replay)
+    assert request(base, "/funding", dict(funding, amountMinor=5001), funding_key)[0] == 409
+    assert request(base, "/accounts/" + source)[1]["balanceMinor"] == 5000
+    print("PASS account creation, balances and idempotent simulated funding", flush=True)
+    body = {"sourceAccount": source, "destinationAccount": destination, "amountMinor": 2500, "currency": "USD"}
     key = str(uuid.uuid4())
     status, payment = request(base, "/payments", body, key)
     assert status == 202, (status, payment)
@@ -60,7 +73,7 @@ def main():
     status, conflict = request(base, "/payments", dict(body, amountMinor=2600), key)
     assert status == 409, (status, conflict)
     eventually(lambda: request(base, path)[1]["status"] == "COMPLETED", "completed payment")
-    print(f"PASS create/get/replay/conflict/completion: {payment['id']}")
+    print(f"PASS create/get/replay/conflict/completion: {payment['id']}", flush=True)
     if args.recovery:
         compose("stop", "ledger")
         try:
@@ -74,7 +87,11 @@ def main():
         finally:
             compose("start", "ledger")
         eventually(lambda: request(base, path)[1]["status"] == "COMPLETED", "recovered payment")
-        print(f"PASS ledger outage and payment restart recovery: {pending['id']}")
+        print(f"PASS ledger outage and payment restart recovery: {pending['id']}", flush=True)
+    spent = 5000 if args.recovery else 2500
+    assert request(base, "/accounts/" + source)[1]["balanceMinor"] == 5000 - spent
+    assert request(base, "/accounts/" + destination)[1]["balanceMinor"] == spent
+    print("PASS final account balances", flush=True)
 
 
 if __name__ == "__main__":

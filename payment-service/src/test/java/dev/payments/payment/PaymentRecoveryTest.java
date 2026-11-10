@@ -3,6 +3,7 @@ package dev.payments.payment;
 import dev.payments.contract.*;
 import dev.payments.ledger.LedgerRpc;
 import dev.payments.ledger.LedgerStore;
+import dev.payments.ledger.AccountStore;
 import com.zaxxer.hikari.HikariDataSource;
 import io.grpc.*;
 import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
@@ -37,6 +38,9 @@ class PaymentRecoveryTest {
         paymentTx=new TransactionTemplate(new DataSourceTransactionManager(paymentDb));
         store=new PaymentStore(payments,paymentTx);
         ledgerStore=new LedgerStore(ledger,new TransactionTemplate(new DataSourceTransactionManager(ledgerDb)));
+        var accounts=new AccountStore(ledger);accounts.create("alice","USD");accounts.create("merchant","USD");
+        ledgerStore.fund(FundingRequest.newBuilder().setIdempotencyKey("fixture-funding").setAccountId("alice")
+                .setAmountMinor(1000000).setCurrency("USD").build());
     }
     HikariDataSource database(String service) {
         String schema=service+"_"+UUID.randomUUID().toString().replace("-","");
@@ -62,8 +66,8 @@ class PaymentRecoveryTest {
     void assertOneJournal(Payment p) {
         assertThat(store.get(p.id()).status()).isEqualTo("COMPLETED");
         assertThat(store.get(p.id()).completedAt()).isNotNull();
-        assertThat(ledger.queryForObject("SELECT count(*) FROM journals",Long.class)).isEqualTo(1);
-        assertThat(ledger.queryForObject("SELECT count(*) FROM entries",Long.class)).isEqualTo(2);
+        assertThat(ledger.queryForObject("SELECT count(*) FROM journals WHERE payment_id=?",Long.class,p.id())).isEqualTo(1);
+        assertThat(ledger.queryForObject("SELECT count(*) FROM entries WHERE payment_id=?",Long.class,p.id())).isEqualTo(2);
         assertThat(ledgerStore.get(p.id().toString()).getTransfer().getAmountMinor()).isEqualTo(2500);
     }
 
@@ -76,7 +80,7 @@ class PaymentRecoveryTest {
         assertThat(store.get(p.id()).status()).isEqualTo("PENDING");
         assertThat(payments.queryForObject("SELECT attempt_count FROM payments WHERE id=?",Integer.class,p.id())).isEqualTo(1);
         assertThat(worker().processOne()).isFalse(); // Retry backoff is durable, not a tight loop.
-        client.close();start(new LedgerRpc(ledgerStore),port);
+        client.close();start(new LedgerRpc(ledgerStore,new AccountStore(ledger)),port);
         makeDue();
         // Reopen the payment pool, as a restarted process would, against the same durable state.
         String url=paymentDb.getJdbcUrl();paymentDb.close();
@@ -101,19 +105,19 @@ class PaymentRecoveryTest {
         var p=create();
         worker().processOne();
         assertThat(store.get(p.id()).status()).isEqualTo("PENDING");
-        assertThat(ledger.queryForObject("SELECT count(*) FROM journals",Long.class)).isEqualTo(1);
+        assertThat(ledger.queryForObject("SELECT count(*) FROM journals WHERE payment_id=?",Long.class,p.id())).isEqualTo(1);
         makeDue();worker().processOne();
         assertOneJournal(p);
     }
 
     @Test void localCompletionFailureRollsBackThenRecoversExistingLedgerEffect() throws Exception {
-        start(new LedgerRpc(ledgerStore),0);
+        start(new LedgerRpc(ledgerStore,new AccountStore(ledger)),0);
         var p=create();
         payments.execute("CREATE FUNCTION fail_completion() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected completion failure'; END $$");
         payments.execute("CREATE TRIGGER injected_failure BEFORE UPDATE ON payments FOR EACH ROW EXECUTE FUNCTION fail_completion()");
         assertThatThrownBy(()->worker().processOne()).isInstanceOf(RuntimeException.class);
         assertThat(store.get(p.id()).status()).isEqualTo("PENDING");
-        assertThat(ledger.queryForObject("SELECT count(*) FROM journals",Long.class)).isEqualTo(1);
+        assertThat(ledger.queryForObject("SELECT count(*) FROM journals WHERE payment_id=?",Long.class,p.id())).isEqualTo(1);
         payments.execute("DROP TRIGGER injected_failure ON payments");
         worker().processOne();assertOneJournal(p);
     }

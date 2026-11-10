@@ -26,6 +26,18 @@ public class LedgerClient implements AutoCloseable {
                 .setPaymentId(p.id().toString()).setSourceAccount(p.sourceAccount()).setDestinationAccount(p.destinationAccount())
                 .setAmountMinor(p.amountMinor()).setCurrency(p.currency()).build());
     }
+    public AccountResult createAccount(String id,String currency) {
+        return stub.withDeadlineAfter(deadlineMillis,TimeUnit.MILLISECONDS)
+                .createAccount(AccountRequest.newBuilder().setAccountId(id).setCurrency(currency).build());
+    }
+    public Account getAccount(String id) {
+        return stub.withDeadlineAfter(deadlineMillis,TimeUnit.MILLISECONDS)
+                .getAccount(AccountId.newBuilder().setAccountId(id).build());
+    }
+    public FundingResult fund(String key,String id,long amount,String currency) {
+        return stub.withDeadlineAfter(deadlineMillis,TimeUnit.MILLISECONDS).fundAccount(FundingRequest.newBuilder()
+                .setIdempotencyKey(key).setAccountId(id).setAmountMinor(amount).setCurrency(currency).build());
+    }
     @Override @PreDestroy public void close() {
         channel.shutdown();
         try { if(!channel.awaitTermination(3,TimeUnit.SECONDS)) channel.shutdownNow(); }

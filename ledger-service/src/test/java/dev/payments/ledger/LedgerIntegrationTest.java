@@ -34,6 +34,13 @@ class LedgerIntegrationTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired TransactionTemplate tx;
     @Autowired GrpcServer grpc;
+    @Autowired AccountStore accounts;
+
+    @BeforeEach void provisionFunds() {
+        accounts.create("alice","USD");accounts.create("merchant","USD");
+        store.fund(FundingRequest.newBuilder().setIdempotencyKey(UUID.randomUUID().toString())
+                .setAccountId("alice").setAmountMinor(1000000).setCurrency("USD").build());
+    }
 
     @Test void applicationStartsGrpcListener() {
         assertThat(grpc.port()).isPositive();
@@ -127,7 +134,7 @@ class LedgerIntegrationTest {
     }
 
     @Test void grpcReturnsJournalAndMapsErrorsWithoutLeakingDatabaseDetails() throws Exception {
-        var server=NettyServerBuilder.forPort(0).addService(new LedgerRpc(store)).build().start();
+        var server=NettyServerBuilder.forPort(0).addService(new LedgerRpc(store,accounts)).build().start();
         var channel=ManagedChannelBuilder.forAddress("localhost",server.getPort()).usePlaintext().build();
         try {
             var client=LedgerGrpc.newBlockingStub(channel).withDeadlineAfter(5,TimeUnit.SECONDS);

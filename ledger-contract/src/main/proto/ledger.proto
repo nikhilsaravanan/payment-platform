@@ -6,6 +6,10 @@ option java_multiple_files = true;
 service Ledger {
   rpc PostTransfer(Transfer) returns (Journal);
   rpc GetTransfer(TransferId) returns (Journal);
+  rpc SubmitTransfer(Transfer) returns (TransferResult);
+  rpc CreateAccount(AccountRequest) returns (AccountResult);
+  rpc GetAccount(AccountId) returns (Account);
+  rpc FundAccount(FundingRequest) returns (FundingResult);
 }
 message Transfer {
   string payment_id = 1;
@@ -24,4 +28,43 @@ message Entry {
 message Journal {
   Transfer transfer = 1;
   repeated Entry entries = 2;
+}
+enum TransferOutcome {
+  TRANSFER_OUTCOME_UNSPECIFIED = 0;
+  POSTED = 1;
+  INSUFFICIENT_FUNDS = 2;
+  ACCOUNT_NOT_FOUND = 3;
+}
+message TransferResult {
+  string payment_id = 1;
+  TransferOutcome outcome = 2;
+}
+message AccountRequest {
+  string account_id = 1;
+  string currency = 2;
+}
+message AccountId { string account_id = 1; }
+message Account {
+  string account_id = 1;
+  string currency = 2;
+  // Exact signed integer; may exceed int64 after many postings.
+  string balance_minor = 3;
+}
+message AccountResult {
+  Account account = 1;
+  bool created = 2;
+}
+message FundingRequest {
+  string idempotency_key = 1;
+  string account_id = 2;
+  int64 amount_minor = 3;
+  string currency = 4;
+}
+message FundingResult {
+  string funding_id = 1;
+  string account_id = 2;
+  int64 amount_minor = 3;
+  string currency = 4;
+  TransferOutcome outcome = 5;
+  bool created = 6;
 }
