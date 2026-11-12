@@ -35,7 +35,7 @@ class AccountApiTest {
         Flyway.configure().dataSource(ds).schemas("ledger_api").locations("classpath:db/ledger").load().migrate();
         var jdbc=new JdbcTemplate(ds);
         var ledger=new LedgerStore(jdbc,new TransactionTemplate(new DataSourceTransactionManager(ds)));
-        var rpc=new LedgerRpc(ledger,new AccountStore(jdbc),new LedgerRefundStore(jdbc,new TransactionTemplate(new DataSourceTransactionManager(ds)),ledger)) {
+        var rpc=new LedgerRpc(ledger,new AccountStore(jdbc),new LedgerRefundStore(jdbc,new TransactionTemplate(new DataSourceTransactionManager(ds)),ledger),new LedgerHistoryStore(jdbc)) {
             @Override public void fundAccount(FundingRequest request,StreamObserver<FundingResult> response) {
                 if(dropFundingResponse.getAndSet(false)) {
                     ledger.fund(request);
@@ -90,7 +90,7 @@ class AccountApiTest {
                 "{\"accountId\":\"x\",\"currency\":\"EUR\"}","{\"accountId\":\" \",\"currency\":\"USD\"}"))
             assertThat(post("/accounts",body,null).getStatusCode()).as(body).isEqualTo(HttpStatus.BAD_REQUEST);
         String id=account();
-        for(String body:List.of("{}",funding(id,0),funding(id,-1),funding(id,1000000000001L),funding(id,100).replace("100","null"),funding("__simulation_issuer__",100)))
+        for(String body:List.of("{}",funding(id,0),funding(id,-1),funding(id,1000000000001L),funding(id,100).replace("100","null"),funding(id,100).replace(":100",":\"100\""),funding("__simulation_issuer__",100)))
             assertThat(post("/funding",body,UUID.randomUUID().toString()).getStatusCode()).as(body).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(post("/funding",funding(id,100),null).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(post("/funding",funding(id,100),"x".repeat(201)).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);

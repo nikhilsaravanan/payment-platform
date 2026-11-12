@@ -5,6 +5,7 @@ import dev.payments.ledger.LedgerRpc;
 import dev.payments.ledger.LedgerStore;
 import dev.payments.ledger.AccountStore;
 import dev.payments.ledger.LedgerRefundStore;
+import dev.payments.ledger.LedgerHistoryStore;
 import com.zaxxer.hikari.HikariDataSource;
 import io.grpc.*;
 import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
@@ -65,7 +66,7 @@ class PaymentRecoveryTest {
     PaymentWorker worker() {return new PaymentWorker(payments,paymentTx,client);}
     LedgerRpc ledgerRpc() {
         return new LedgerRpc(ledgerStore,new AccountStore(ledger),
-                new LedgerRefundStore(ledger,new TransactionTemplate(new DataSourceTransactionManager(ledgerDb)),ledgerStore));
+                new LedgerRefundStore(ledger,new TransactionTemplate(new DataSourceTransactionManager(ledgerDb)),ledgerStore),new LedgerHistoryStore(ledger));
     }
     void makeDue() {payments.update("UPDATE payments SET next_attempt_at=clock_timestamp()-interval '1 second' WHERE status='PENDING'");}
     void assertOneJournal(Payment p) {

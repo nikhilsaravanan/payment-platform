@@ -51,6 +51,10 @@ public class LedgerClient implements AutoCloseable {
         return stub.withDeadlineAfter(deadlineMillis,TimeUnit.MILLISECONDS)
                 .getAccount(AccountId.newBuilder().setAccountId(id).build());
     }
+    public HistoryPage history(String accountId,int size,String cursor) {
+        return stub.withDeadlineAfter(deadlineMillis,TimeUnit.MILLISECONDS)
+            .listTransactions(HistoryRequest.newBuilder().setAccountId(accountId).setPageSize(size).setCursor(cursor).build());
+    }
     public FundingResult fund(String key,String id,long amount,String currency) {
         return stub.withDeadlineAfter(deadlineMillis,TimeUnit.MILLISECONDS).fundAccount(FundingRequest.newBuilder()
                 .setIdempotencyKey(key).setAccountId(id).setAmountMinor(amount).setCurrency(currency).build());

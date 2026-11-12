@@ -12,6 +12,8 @@ spring:
       transaction-isolation: TRANSACTION_READ_COMMITTED
       connection-init-sql: SET statement_timeout = '5s'
   jackson:
+    mapper:
+      allow-coercion-of-scalars: false
     deserialization:
       accept-float-as-int: false
       fail-on-unknown-properties: true

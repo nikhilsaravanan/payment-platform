@@ -41,7 +41,7 @@ class RefundApiTest {
         Flyway.configure().dataSource(ds).schemas("refund_api").locations("classpath:db/ledger").load().migrate();
         ledgerJdbc=new JdbcTemplate(ds);var tx=new TransactionTemplate(new DataSourceTransactionManager(ds));
         var ledger=new LedgerStore(ledgerJdbc,tx);var refunds=new LedgerRefundStore(ledgerJdbc,tx,ledger);
-        var rpc=new LedgerRpc(ledger,new AccountStore(ledgerJdbc),refunds) {
+        var rpc=new LedgerRpc(ledger,new AccountStore(ledgerJdbc),refunds,new LedgerHistoryStore(ledgerJdbc)) {
             @Override public void submitRefund(RefundTransfer request,StreamObserver<RefundResult> response) {
                 String bad=malformed.getAndSet(null);
                 if(bad!=null) {
@@ -134,7 +134,7 @@ class RefundApiTest {
         assertThat(refund(p,100,UUID.randomUUID().toString()).getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
         new PaymentWorker(jdbc,tx,client).processOne();
         long before=jdbc.queryForObject("SELECT count(*) FROM refunds",Long.class);
-        for(String body:List.of("{}","null","{\"amountMinor\":null}","{\"amountMinor\":0}","{\"amountMinor\":-1}","{\"amountMinor\":1000000000001}","{\"amountMinor\":1.5}"))
+        for(String body:List.of("{}","null","{\"amountMinor\":null}","{\"amountMinor\":0}","{\"amountMinor\":-1}","{\"amountMinor\":1000000000001}","{\"amountMinor\":1.5}","{\"amountMinor\":\"100\"}"))
             assertThat(post("/payments/"+p.id()+"/refunds",body,UUID.randomUUID().toString()).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(refund(p,100,null).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(refund(p,100,"x".repeat(201)).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
@@ -198,6 +198,27 @@ class RefundApiTest {
             assertThat(jdbc.queryForObject("SELECT last_error FROM refunds WHERE id=?::uuid",String.class,id)).isEqualTo("DATA_LOSS");
             jdbc.update("UPDATE refunds SET next_attempt_at=clock_timestamp()+interval '1 day' WHERE id=?::uuid",id);
         }
+    }
+
+    @Test void historyPaginatesRefundPaymentAndFundingAndValidatesInput() throws Exception {
+        var p=payment(1000,true);String refundId=accepted(p,250);worker().processOne();
+        String path="/accounts/"+p.source()+"/transactions";
+        var first=http.getForEntity(path+"?limit=1",String.class);assertThat(first.getStatusCode()).isEqualTo(HttpStatus.OK);
+        var page=json.readTree(first.getBody());assertThat(page.path("items").size()).isEqualTo(1);
+        assertThat(page.path("items").get(0).path("type").asText()).isEqualTo("REFUND");
+        assertThat(page.path("items").get(0).path("transactionId").asText()).isEqualTo(refundId);
+        assertThat(page.path("items").get(0).path("originalPaymentId").asText()).isEqualTo(p.id());
+        var second=json.readTree(http.getForObject(path+"?limit=1&cursor="+page.path("nextCursor").asText(),String.class));
+        assertThat(second.path("items").get(0).path("type").asText()).isEqualTo("PAYMENT");
+        var third=json.readTree(http.getForObject(path+"?limit=1&cursor="+second.path("nextCursor").asText(),String.class));
+        assertThat(third.path("items").get(0).path("type").asText()).isEqualTo("FUNDING");assertThat(third.path("nextCursor").isNull()).isTrue();
+        assertThat(json.readTree(http.getForObject("/transactions?accountId="+p.source(),String.class)).path("items").size()).isEqualTo(3);
+        for(String query:List.of("?limit=0","?limit=101","?cursor=bad-cursor"))
+            assertThat(http.getForEntity(path+query,String.class).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(http.getForEntity("/accounts/"+UUID.randomUUID()+"/transactions",String.class).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+        unavailable.set(true);
+        try {assertThat(http.getForEntity(path,String.class).getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);}
+        finally {unavailable.set(false);}
     }
 
     ResponseEntity<String> post(String path,String body,String key) {

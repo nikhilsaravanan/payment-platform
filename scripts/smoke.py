@@ -157,6 +157,27 @@ def main():
         assert request(base, "/accounts/" + destination)[1]["balanceMinor"] == 2400
         print("PASS refund recovery after ledger outage and payment process restart", flush=True)
 
+    transactions, cursor = [], None
+    while True:
+        path = "/accounts/" + source + "/transactions?limit=2"
+        if cursor:
+            path += "&cursor=" + cursor
+        status, page = request(base, path)
+        assert status == 200, (status, page)
+        transactions.extend(page["items"])
+        cursor = page["nextCursor"]
+        if cursor is None:
+            break
+    ids = [entry["transactionId"] for entry in transactions]
+    assert len(ids) == len(set(ids)), ids
+    assert {entry["type"] for entry in transactions} == {"FUNDING", "PAYMENT", "REFUND"}
+    refund_entry = next(entry for entry in transactions if entry["transactionId"] == partial["id"])
+    assert refund_entry["originalPaymentId"] == payment["id"]
+    assert refund_entry["direction"] == "CREDIT" and refund_entry["amountMinor"] == 1000
+    assert len(transactions) == (6 if args.recovery else 4), transactions
+    assert request(base, "/accounts/" + source + "/transactions?cursor=invalid-cursor")[0] == 400
+    print("PASS cursor-paginated funding/payment/refund history and original-payment links", flush=True)
+
 
 if __name__ == "__main__":
     main()

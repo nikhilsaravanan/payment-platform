@@ -54,7 +54,7 @@ class PaymentApiTest {
         long before=jdbc.queryForObject("SELECT count(*) FROM payments",Long.class);
         var badBodies=List.of("{}","null","{", BODY.replace("2500","null"), BODY.replace("2500","0"),
                 BODY.replace("2500","-1"),BODY.replace("2500","1000000000001"),
-                BODY.replace("2500","9223372036854775808"),BODY.replace("2500","2.5"),
+                BODY.replace("2500","9223372036854775808"),BODY.replace("2500","2.5"),BODY.replace("2500","\"2500\""),
                 BODY.replace("\"alice\"","null"),BODY.replace("alice"," "),
                 BODY.replace("merchant","alice"),BODY.replace("USD","EUR"),BODY.replace("alice","a".repeat(101)),
                 BODY.replace("alice","__simulation_issuer__"));

@@ -101,6 +101,14 @@ class RefundLedgerTest {
             assertThatThrownBy(()->refunds.submit(invalid)).isInstanceOf(IllegalArgumentException.class);
     }
 
+    @Test void rejectedRefundAndOrdinaryTransferMayReuseAnIdInEitherOrder() {
+        var existing=payment(100);
+        var request=request(UUID.randomUUID().toString(),1).toBuilder().setRefundId(existing.getPaymentId()).build();
+        assertThat(refunds.submit(request).getOutcome()).isEqualTo(RefundOutcome.REFUND_PAYMENT_NOT_FOUND);
+        assertThat(refunds.submit(request).getOutcome()).isEqualTo(RefundOutcome.REFUND_PAYMENT_NOT_FOUND);
+        assertThat(ledger.get(existing.getPaymentId()).getTransfer()).isEqualTo(existing);
+    }
+
     @Test void secondEntryFailureRollsBackDecisionAndMoneyMovement() {
         var p=payment(1000);var request=refund(p,100);
         jdbc.execute("CREATE FUNCTION fail_refund_credit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.side='CREDIT' THEN RAISE EXCEPTION 'injected refund failure'; END IF; RETURN NEW; END $$");
