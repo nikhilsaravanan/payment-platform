@@ -8,7 +8,9 @@ The platform creates accounts, funds them with simulated money, and processes
 idempotent payments through a balanced immutable ledger. Account locks prevent
 distinct concurrent payments from spending the same funds. Durable posting decisions
 preserve both successful and rejected outcomes across retries and lost responses.
-Refunds, merchant webhooks, and reconciliation are [later milestones](docs/roadmap.md).
+Full/partial refunds preserve the original payment and create balanced reversals;
+posted account history is cursor-paginated. Merchant webhooks and reconciliation
+are [later milestones](docs/roadmap.md).
 
 ## Run locally
 
@@ -47,15 +49,24 @@ curl -i http://localhost:8080/payments \
 
 curl http://localhost:8080/payments/REPLACE_WITH_RETURNED_UUID
 curl http://localhost:8080/accounts/alice
+
+# After the payment reports COMPLETED; use its returned UUID:
+curl -i http://localhost:8080/payments/REPLACE_WITH_RETURNED_UUID/refunds \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: example-refund-001' \
+  -d '{"amountMinor":1000}'
+curl http://localhost:8080/refunds/REPLACE_WITH_REFUND_UUID
+curl 'http://localhost:8080/accounts/alice/transactions?limit=20'
 ```
 
 `amountMinor: 2500` means USD 25.00. The API accepts USD only and integer amounts
-from 1 through 1,000,000,000,000 minor units. Account IDs must be nonblank, distinct,
+from 1 through 1,000,000,000,000 minor units. Amounts must be JSON integers;
+quoted numeric strings and fractional numbers return 400. Account IDs must be nonblank, distinct,
 and at most 100 characters. Names are case-sensitive and preserved as supplied.
 The required `Idempotency-Key` supports up to 200 printable ASCII characters;
 use a UUID or another opaque token without surrounding whitespace. Keys are global
-in this unauthenticated sandbox and retained indefinitely. Funding and payments
-use separate key namespaces. The internal ID `__simulation_issuer__` is reserved.
+in this unauthenticated sandbox and retained indefinitely. Funding, payments and
+refunds use separate key namespaces. The internal ID `__simulation_issuer__` is reserved.
 
 | Request | Response |
 | --- | --- |
@@ -69,6 +80,11 @@ use separate key namespaces. The internal ID `__simulation_issuer__` is reserved
 | Same key and same validated fields | `200`, same payment ID and current status |
 | Same key with different fields | `409 IDEMPOTENCY_CONFLICT` |
 | `GET /payments/{id}` | `200`, or `404 PAYMENT_NOT_FOUND` |
+| `POST /payments/{id}/refunds` | `202` new or `200` replay, refund resource and `Location` |
+| Refund of a pending/rejected payment | `409 PAYMENT_NOT_COMPLETED`; no refund queued |
+| `GET /refunds/{id}` | `200`, or `404 REFUND_NOT_FOUND` |
+| `GET /accounts/{id}/transactions` | `200` posted movements, `items` and `nextCursor` |
+| `GET /transactions?accountId=...` | History alias supporting opaque account IDs |
 | Invalid fields, JSON, key, or UUID | `400 INVALID_REQUEST` |
 | Database unavailable | `503 SERVICE_UNAVAILABLE` |
 | Ledger unavailable for account/funding calls | `503 LEDGER_UNAVAILABLE`; retry the same operation/key |
@@ -99,6 +115,35 @@ retry with the original key. It is an unrestricted simulation faucet, not a depo
 integration or proof that external money was received. Account/funding endpoints
 require the ledger; payment acceptance can continue during a ledger outage.
 
+## Refunds and history
+
+Refunds use an explicit `amountMinor` and inherit the original payment's currency.
+A full refund specifies its full amount; partial refunds can cumulatively reach
+that amount. Acceptance is asynchronous: poll `/refunds/{id}` for `COMPLETED` or
+`REJECTED`. The original payment stays `COMPLETED`; its journal is never edited.
+Each completed refund creates a separate reversal linked to that payment.
+
+The recipient needs sufficient available funds to return the money. Refund
+rejection reasons are `INSUFFICIENT_FUNDS`, `REFUND_LIMIT_EXCEEDED`,
+`PAYMENT_NOT_FOUND`, or `PAYMENT_NOT_REFUNDABLE`. Funding and refund journals cannot
+themselves be refunded. A rejection is final under its original key, including
+after later funding. A transport failure stays pending and retries the same refund
+UUID. Refund acceptance remains available during a ledger outage for an already
+completed local payment.
+
+History lists **posted movements only**, including `PAYMENT`, `FUNDING` and `REFUND`.
+Pending/rejected requests are available through their payment/refund resources.
+Each history item includes its journal `transactionId`, `type`, `accountId`,
+`counterparty`, `direction` (DEBIT/CREDIT), positive `amountMinor`, `currency`,
+`createdAt`, and `originalPaymentId` for refunds (null otherwise).
+
+Use `limit` from 1 to 100 (default 20). Pass the returned `nextCursor` unchanged for
+the next page; null means the end. Cursors are versioned and account-bound, and
+malformed or cross-account cursors return 400. Ordering is descending creation time
+then journal UUID, with strict keyset boundaries handling equal timestamps. This
+is a live view rather than a cross-request snapshot: refresh the first page to see
+concurrent new commits. Existing immutable entries do not move between pages.
+
 ## Design
 
 ```mermaid
@@ -110,12 +155,16 @@ flowchart LR
     Worker -->|gRPC SubmitTransfer| Ledger
     Ledger --> LDB[(Ledger database)]
     Worker -->|persist terminal outcome| PDB
+    RefundWorker[Refund worker] -->|claim pending refund| PDB
+    RefundWorker -->|gRPC SubmitRefund| Ledger
+    RefundWorker -->|persist refund outcome| PDB
 ```
 
 Each service owns a separate database and role. A single local PostgreSQL container
 hosts both. Flyway applies migrations on startup in service-specific locations.
 The protobuf contract lives in `ledger-contract`; it exposes account/funding RPCs
-and typed `SubmitTransfer` outcomes. Legacy `PostTransfer`/`GetTransfer` remain
+and typed `SubmitTransfer`/`SubmitRefund` outcomes, plus `ListTransactions`.
+Legacy `PostTransfer`/`GetTransfer` remain
 available; the former reports business rejection with `FAILED_PRECONDITION`.
 gRPC uses plaintext inside the local network; a production deployment
 would need authentication and transport security.
@@ -130,7 +179,8 @@ claims one due row with `FOR UPDATE SKIP LOCKED`, calls gRPC with a two-second
 deadline, and commits completion or terminal rejection. Each batch handles at most ten rows, with a
 250 ms delay between batches. The default single scheduler uses one of ten database
 connections, leaving capacity for the API. Multiple service instances can claim
-different rows. Holding the row lock during the bounded RPC is a deliberate MVP
+different rows. Refunds use their own durable queue and the same locking/retry
+pattern. `PAYMENT_WORKER_ENABLED=false` disables both processors. Holding the row lock during the bounded RPC is a deliberate MVP
 tradeoff; higher throughput could justify leases or a broker.
 
 **Ledger:** one transaction inserts a unique journal keyed by payment ID and two
@@ -161,6 +211,15 @@ deferred constraints reject unfinished decisions, successful decisions without a
 matching journal, and rejected decisions with a journal. Replaying a rejection
 returns that same rejection even if funds or accounts have since become available.
 Unknown or mismatched RPC results remain pending for investigation.
+
+**Refund cap and reversal:** a refund first locks its original payment journal,
+checks the sum of successful refunds, then takes the usual ordered account locks.
+All refund paths follow that order; ordinary transfers/funding never acquire an
+original-payment lock after account locks. This serializes concurrent refunds for
+one payment without blocking unrelated originals. The refund decision, posting
+decision and reversal entries commit together. Deferred constraints tie the refund
+to a posted original transfer and verify its reversal direction, amount and outcome.
+Rejected refunds consume no refundable amount and create no reversal entries.
 
 | Failure | Recovery |
 | --- | --- |
@@ -195,7 +254,14 @@ Opposing transfers test lock ordering; V1 upgrade tests preserve legacy debt and
 idempotency. Failure injection is confined to test fixtures.
 The Compose smoke test checks funding, balances, terminal rejection, eight distinct
 HTTP payments sharing a limited source, and a real payment-process restart during
-a ledger outage. GitHub Actions runs the suites and recovery smoke test.
+a ledger outage. Refund tests race twenty distinct 100-unit refunds against a
+1,000-unit original, yielding ten successes and ten limit rejections even with
+extra merchant funds. Tests also cover lost refund success/rejection responses,
+local completion rollback, opposing refund/transfer lock order, and immutable
+decisions. History tests cover tied timestamps, account-bound malformed cursors,
+page boundaries and refund links. The recovery smoke restarts the real process
+separately for pending payments and refunds, then traverses history pages.
+GitHub Actions runs the suites and full recovery smoke test.
 
 Inspect ledger records without exposing a PostgreSQL host port:
 
@@ -220,7 +286,9 @@ the now-reserved issuer ID, rather than silently reinterpreting it.
 
 For newly created accounts, spending cannot make the balance negative. Transfers
 and funding always preserve a zero net sum across all ledger entries, including
-the issuer. Funded-account changes do not implement refunds or spend reservations.
+the issuer. V3 adds refunds while preserving original journals; V4 corrects refund
+decision namespace checks without rewriting V3. Successful V2 payments remain
+refundable after upgrade. No spend reservations are implemented.
 
 `docker compose down` stops services and retains records. **Destructive reset:**
 `docker compose down -v` removes the project's database volume and all simulated
