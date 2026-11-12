@@ -42,4 +42,23 @@ class AccountMigrationTest {
         assertThat(ledger.submit(next.toBuilder().setPaymentId(UUID.randomUUID().toString()).build()).getOutcome()).isEqualTo(TransferOutcome.POSTED);
         assertThat(accounts.get("legacy-alice").getBalanceMinor()).isEqualTo("0");
     }
+
+    @Test void upgradeFromV2PreservesFundedPaymentAndEnablesRefund() {
+        String schema="v2_"+UUID.randomUUID().toString().replace("-","");String url=DB.getJdbcUrl();
+        var ds=new DriverManagerDataSource(url+(url.contains("?")?"&":"?")+"currentSchema="+schema,DB.getUsername(),DB.getPassword());
+        Flyway.configure().dataSource(ds).schemas(schema).locations("classpath:db/ledger").target("2").load().migrate();
+        var jdbc=new JdbcTemplate(ds);var tx=new TransactionTemplate(new DataSourceTransactionManager(ds));
+        var accounts=new AccountStore(jdbc);var ledger=new LedgerStore(jdbc,tx);
+        accounts.create("payer","USD");accounts.create("merchant","USD");
+        ledger.fund(FundingRequest.newBuilder().setIdempotencyKey("v2-funding").setAccountId("payer").setAmountMinor(1000).setCurrency("USD").build());
+        var payment=Transfer.newBuilder().setPaymentId(UUID.randomUUID().toString()).setSourceAccount("payer").setDestinationAccount("merchant").setAmountMinor(1000).setCurrency("USD").build();
+        var original=ledger.post(payment);
+        Flyway.configure().dataSource(ds).schemas(schema).locations("classpath:db/ledger").load().migrate();
+        var refunds=new LedgerRefundStore(jdbc,tx,ledger);
+        var request=RefundTransfer.newBuilder().setRefundId(UUID.randomUUID().toString()).setPaymentId(payment.getPaymentId()).setAmountMinor(300).setCurrency("USD").build();
+        assertThat(refunds.submit(request).getOutcome()).isEqualTo(RefundOutcome.REFUND_POSTED);
+        assertThat(ledger.post(payment)).isEqualTo(original);
+        assertThat(accounts.get("payer").getBalanceMinor()).isEqualTo("300");
+        assertThat(accounts.get("merchant").getBalanceMinor()).isEqualTo("700");
+    }
 }

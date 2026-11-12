@@ -13,7 +13,10 @@ public class LedgerRpc extends LedgerGrpc.LedgerImplBase {
     private static final Logger log=LoggerFactory.getLogger(LedgerRpc.class);
     private final LedgerStore store;
     private final AccountStore accounts;
-    public LedgerRpc(LedgerStore store,AccountStore accounts) { this.store=store;this.accounts=accounts; }
+    private final LedgerRefundStore refunds;
+    public LedgerRpc(LedgerStore store,AccountStore accounts,LedgerRefundStore refunds) {
+        this.store=store;this.accounts=accounts;this.refunds=refunds;
+    }
     @Override public void postTransfer(Transfer request,StreamObserver<Journal> response) {
         respond(()->store.post(request),response);
     }
@@ -31,6 +34,9 @@ public class LedgerRpc extends LedgerGrpc.LedgerImplBase {
     }
     @Override public void fundAccount(FundingRequest request,StreamObserver<FundingResult> response) {
         respond(()->store.fund(request),response);
+    }
+    @Override public void submitRefund(RefundTransfer request,StreamObserver<RefundResult> response) {
+        respond(()->refunds.submit(request),response);
     }
     private <T> void respond(Supplier<T> operation,StreamObserver<T> response) {
         try { response.onNext(operation.get());response.onCompleted(); }

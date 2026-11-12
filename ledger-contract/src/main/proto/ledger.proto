@@ -10,6 +10,7 @@ service Ledger {
   rpc CreateAccount(AccountRequest) returns (AccountResult);
   rpc GetAccount(AccountId) returns (Account);
   rpc FundAccount(FundingRequest) returns (FundingResult);
+  rpc SubmitRefund(RefundTransfer) returns (RefundResult);
 }
 message Transfer {
   string payment_id = 1;
@@ -67,4 +68,25 @@ message FundingResult {
   string currency = 4;
   TransferOutcome outcome = 5;
   bool created = 6;
+}
+message RefundTransfer {
+  string refund_id = 1;
+  string payment_id = 2;
+  int64 amount_minor = 3;
+  string currency = 4;
+}
+enum RefundOutcome {
+  REFUND_OUTCOME_UNSPECIFIED = 0;
+  REFUND_POSTED = 1;
+  REFUND_INSUFFICIENT_FUNDS = 2;
+  REFUND_PAYMENT_NOT_FOUND = 3;
+  REFUND_PAYMENT_NOT_REFUNDABLE = 4;
+  REFUND_LIMIT_EXCEEDED = 5;
+}
+message RefundResult {
+  string refund_id = 1;
+  string payment_id = 2;
+  int64 amount_minor = 3;
+  string currency = 4;
+  RefundOutcome outcome = 5;
 }

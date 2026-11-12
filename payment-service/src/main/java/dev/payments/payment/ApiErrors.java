@@ -15,10 +15,14 @@ import io.grpc.StatusRuntimeException;
 public class ApiErrors {
     private static final Logger log=LoggerFactory.getLogger(ApiErrors.class);
     record Error(String code,String message) {}
-    @ExceptionHandler(PaymentStore.Conflict.class)
-    ResponseEntity<Error> conflict() { return error(409,"IDEMPOTENCY_CONFLICT","Key already used with different payment fields"); }
+    @ExceptionHandler({PaymentStore.Conflict.class,RefundStore.Conflict.class})
+    ResponseEntity<Error> conflict() { return error(409,"IDEMPOTENCY_CONFLICT","Key already used with different request fields"); }
     @ExceptionHandler(PaymentStore.NotFound.class)
     ResponseEntity<Error> notFound() { return error(404,"PAYMENT_NOT_FOUND","Payment not found"); }
+    @ExceptionHandler(RefundStore.NotFound.class)
+    ResponseEntity<Error> refundNotFound() {return error(404,"REFUND_NOT_FOUND","Refund not found");}
+    @ExceptionHandler(RefundStore.NotRefundable.class)
+    ResponseEntity<Error> notRefundable() {return error(409,"PAYMENT_NOT_COMPLETED","Payment must complete before refunding");}
     @ExceptionHandler({MethodArgumentNotValidException.class,MissingRequestHeaderException.class,
             HttpMessageNotReadableException.class,MethodArgumentTypeMismatchException.class,IllegalArgumentException.class})
     ResponseEntity<Error> badRequest() { return error(400,"INVALID_REQUEST","Check payment fields, UUID and Idempotency-Key"); }

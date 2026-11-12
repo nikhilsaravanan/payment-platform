@@ -35,6 +35,7 @@ class LedgerIntegrationTest {
     @Autowired TransactionTemplate tx;
     @Autowired GrpcServer grpc;
     @Autowired AccountStore accounts;
+    @Autowired LedgerRefundStore refunds;
 
     @BeforeEach void provisionFunds() {
         accounts.create("alice","USD");accounts.create("merchant","USD");
@@ -134,7 +135,7 @@ class LedgerIntegrationTest {
     }
 
     @Test void grpcReturnsJournalAndMapsErrorsWithoutLeakingDatabaseDetails() throws Exception {
-        var server=NettyServerBuilder.forPort(0).addService(new LedgerRpc(store,accounts)).build().start();
+        var server=NettyServerBuilder.forPort(0).addService(new LedgerRpc(store,accounts,refunds)).build().start();
         var channel=ManagedChannelBuilder.forAddress("localhost",server.getPort()).usePlaintext().build();
         try {
             var client=LedgerGrpc.newBlockingStub(channel).withDeadlineAfter(5,TimeUnit.SECONDS);

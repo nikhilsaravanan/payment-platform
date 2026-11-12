@@ -29,12 +29,18 @@ public class LedgerStore {
     }
 
     public TransferResult submit(Transfer transfer) {
+        return submit(transfer,"TRANSFER");
+    }
+
+    TransferResult reverse(Transfer transfer) { return submit(transfer,"REFUND"); }
+
+    private TransferResult submit(Transfer transfer,String kind) {
         validate(transfer);
         return tx.execute(status -> {
-            int inserted = insertDecision(transfer, "TRANSFER", null, "payment_id");
+            int inserted = insertDecision(transfer, kind, null, "payment_id");
             if (inserted == 1) resolve(transfer, false);
             var decision = jdbc.queryForObject("SELECT * FROM transfer_decisions WHERE payment_id=?::uuid", DECISION, transfer.getPaymentId());
-            if (!decision.kind().equals("TRANSFER") || !sameMovement(decision.transfer(), transfer)) throw new Conflict();
+            if (!decision.kind().equals(kind) || !sameMovement(decision.transfer(), transfer)) throw new Conflict();
             return TransferResult.newBuilder().setPaymentId(transfer.getPaymentId()).setOutcome(decision.outcome()).build();
         });
     }
@@ -112,7 +118,7 @@ public class LedgerStore {
     private static void validateAmount(long amount, String currency) {
         if (amount < 1 || amount > 1_000_000_000_000L || !"USD".equals(currency)) throw new IllegalArgumentException("Invalid money");
     }
-    private static UUID parseId(String id) {
+    static UUID parseId(String id) {
         var parsed = UUID.fromString(id);
         if (!parsed.toString().equals(id)) throw new IllegalArgumentException("Invalid payment ID");
         return parsed;

@@ -35,7 +35,7 @@ class AccountApiTest {
         Flyway.configure().dataSource(ds).schemas("ledger_api").locations("classpath:db/ledger").load().migrate();
         var jdbc=new JdbcTemplate(ds);
         var ledger=new LedgerStore(jdbc,new TransactionTemplate(new DataSourceTransactionManager(ds)));
-        var rpc=new LedgerRpc(ledger,new AccountStore(jdbc)) {
+        var rpc=new LedgerRpc(ledger,new AccountStore(jdbc),new LedgerRefundStore(jdbc,new TransactionTemplate(new DataSourceTransactionManager(ds)),ledger)) {
             @Override public void fundAccount(FundingRequest request,StreamObserver<FundingResult> response) {
                 if(dropFundingResponse.getAndSet(false)) {
                     ledger.fund(request);

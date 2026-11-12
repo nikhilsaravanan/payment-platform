@@ -4,6 +4,7 @@ import dev.payments.contract.*;
 import dev.payments.ledger.LedgerRpc;
 import dev.payments.ledger.LedgerStore;
 import dev.payments.ledger.AccountStore;
+import dev.payments.ledger.LedgerRefundStore;
 import com.zaxxer.hikari.HikariDataSource;
 import io.grpc.*;
 import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
@@ -62,6 +63,10 @@ class PaymentRecoveryTest {
         client=new LedgerClient("localhost",server.getPort(),500);
     }
     PaymentWorker worker() {return new PaymentWorker(payments,paymentTx,client);}
+    LedgerRpc ledgerRpc() {
+        return new LedgerRpc(ledgerStore,new AccountStore(ledger),
+                new LedgerRefundStore(ledger,new TransactionTemplate(new DataSourceTransactionManager(ledgerDb)),ledgerStore));
+    }
     void makeDue() {payments.update("UPDATE payments SET next_attempt_at=clock_timestamp()-interval '1 second' WHERE status='PENDING'");}
     void assertOneJournal(Payment p) {
         assertThat(store.get(p.id()).status()).isEqualTo("COMPLETED");
@@ -80,7 +85,7 @@ class PaymentRecoveryTest {
         assertThat(store.get(p.id()).status()).isEqualTo("PENDING");
         assertThat(payments.queryForObject("SELECT attempt_count FROM payments WHERE id=?",Integer.class,p.id())).isEqualTo(1);
         assertThat(worker().processOne()).isFalse(); // Retry backoff is durable, not a tight loop.
-        client.close();start(new LedgerRpc(ledgerStore,new AccountStore(ledger)),port);
+        client.close();start(ledgerRpc(),port);
         makeDue();
         // Reopen the payment pool, as a restarted process would, against the same durable state.
         String url=paymentDb.getJdbcUrl();paymentDb.close();
@@ -111,7 +116,7 @@ class PaymentRecoveryTest {
     }
 
     @Test void localCompletionFailureRollsBackThenRecoversExistingLedgerEffect() throws Exception {
-        start(new LedgerRpc(ledgerStore,new AccountStore(ledger)),0);
+        start(ledgerRpc(),0);
         var p=create();
         payments.execute("CREATE FUNCTION fail_completion() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected completion failure'; END $$");
         payments.execute("CREATE TRIGGER injected_failure BEFORE UPDATE ON payments FOR EACH ROW EXECUTE FUNCTION fail_completion()");
@@ -173,7 +178,7 @@ class PaymentRecoveryTest {
     }
 
     @Test void missingAccountIsTerminalAndSameKeyStillReturnsRejectedPayment() throws Exception {
-        start(new LedgerRpc(ledgerStore,new AccountStore(ledger)),0);
+        start(ledgerRpc(),0);
         var body=new CreatePayment("alice","missing",500L,"USD");
         var p=store.create("missing-account-payment",body).payment();
         worker().processOne();

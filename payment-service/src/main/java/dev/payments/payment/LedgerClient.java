@@ -36,6 +36,17 @@ public class LedgerClient implements AutoCloseable {
         return stub.withDeadlineAfter(deadlineMillis,TimeUnit.MILLISECONDS)
                 .createAccount(AccountRequest.newBuilder().setAccountId(id).setCurrency(currency).build());
     }
+    public RefundOutcome refund(Refund refund) {
+        var result=stub.withDeadlineAfter(deadlineMillis,TimeUnit.MILLISECONDS).submitRefund(RefundTransfer.newBuilder()
+            .setRefundId(refund.id().toString()).setPaymentId(refund.paymentId().toString()).setAmountMinor(refund.amountMinor()).setCurrency(refund.currency()).build());
+        if(!result.getRefundId().equals(refund.id().toString()) || !result.getPaymentId().equals(refund.paymentId().toString())
+                || result.getAmountMinor()!=refund.amountMinor() || !result.getCurrency().equals(refund.currency()))
+            throw Status.DATA_LOSS.withDescription("Mismatched refund outcome").asRuntimeException();
+        return switch(result.getOutcome()) {
+            case REFUND_POSTED,REFUND_INSUFFICIENT_FUNDS,REFUND_PAYMENT_NOT_FOUND,REFUND_PAYMENT_NOT_REFUNDABLE,REFUND_LIMIT_EXCEEDED -> result.getOutcome();
+            default -> throw Status.DATA_LOSS.withDescription("Unknown refund outcome").asRuntimeException();
+        };
+    }
     public Account getAccount(String id) {
         return stub.withDeadlineAfter(deadlineMillis,TimeUnit.MILLISECONDS)
                 .getAccount(AccountId.newBuilder().setAccountId(id).build());

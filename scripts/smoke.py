@@ -122,6 +122,41 @@ def main():
     assert request(base, "/accounts/" + b)[1]["balanceMinor"] == 1000
     print("PASS 8 distinct payments: 2 completed, 6 rejected; no overspending", flush=True)
 
+    refund_key = str(uuid.uuid4())
+    status, partial = request(base, "/payments/" + payment["id"] + "/refunds", {"amountMinor": 1000}, refund_key)
+    assert status == 202, (status, partial)
+    refund_path = "/refunds/" + partial["id"]
+    eventually(lambda: request(base, refund_path)[1]["status"] == "COMPLETED", "partial refund")
+    status, replay = request(base, "/payments/" + payment["id"] + "/refunds", {"amountMinor": 1000}, refund_key)
+    assert status == 200 and replay["id"] == partial["id"], (status, replay)
+    assert request(base, "/payments/" + payment["id"] + "/refunds", {"amountMinor": 1001}, refund_key)[0] == 409
+    status, rest = request(base, "/payments/" + payment["id"] + "/refunds", {"amountMinor": 1500}, str(uuid.uuid4()))
+    assert status == 202, (status, rest)
+    eventually(lambda: request(base, "/refunds/" + rest["id"])[1]["status"] == "COMPLETED", "remaining refund")
+    status, excess = request(base, "/payments/" + payment["id"] + "/refunds", {"amountMinor": 1}, str(uuid.uuid4()))
+    assert status == 202, (status, excess)
+    eventually(lambda: request(base, "/refunds/" + excess["id"])[1]["status"] == "REJECTED", "refund limit rejection")
+    assert request(base, "/refunds/" + excess["id"])[1]["rejectionReason"] == "REFUND_LIMIT_EXCEEDED"
+    assert request(base, "/accounts/" + source)[1]["balanceMinor"] == 7500 - spent
+    assert request(base, "/accounts/" + destination)[1]["balanceMinor"] == spent - 2500
+    print("PASS partial/full refunds, replay, conflict and cumulative refund limit", flush=True)
+
+    if args.recovery:
+        compose("stop", "ledger")
+        try:
+            status, recovering = request(base, "/payments/" + pending["id"] + "/refunds", {"amountMinor": 100}, str(uuid.uuid4()))
+            assert status == 202, (status, recovering)
+            recovering_path = "/refunds/" + recovering["id"]
+            compose("restart", "payment")
+            eventually(lambda: request(base, "/actuator/health")[0] == 200, "restarted refund worker")
+            assert request(base, recovering_path)[1]["status"] == "PENDING"
+        finally:
+            compose("start", "ledger")
+        eventually(lambda: request(base, recovering_path)[1]["status"] == "COMPLETED", "recovered refund")
+        assert request(base, "/accounts/" + source)[1]["balanceMinor"] == 2600
+        assert request(base, "/accounts/" + destination)[1]["balanceMinor"] == 2400
+        print("PASS refund recovery after ledger outage and payment process restart", flush=True)
+
 
 if __name__ == "__main__":
     main()
