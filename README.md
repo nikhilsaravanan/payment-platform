@@ -9,8 +9,8 @@ idempotent payments through a balanced immutable ledger. Account locks prevent
 distinct concurrent payments from spending the same funds. Durable posting decisions
 preserve both successful and rejected outcomes across retries and lost responses.
 Full/partial refunds preserve the original payment and create balanced reversals;
-posted account history is cursor-paginated. Merchant webhooks and reconciliation
-are [later milestones](docs/roadmap.md).
+posted account history is cursor-paginated. Signed merchant webhooks retry from a
+durable outbox; reconciliation is the [next milestone](docs/roadmap.md).
 
 ## Run locally
 
@@ -65,8 +65,8 @@ quoted numeric strings and fractional numbers return 400. Account IDs must be no
 and at most 100 characters. Names are case-sensitive and preserved as supplied.
 The required `Idempotency-Key` supports up to 200 printable ASCII characters;
 use a UUID or another opaque token without surrounding whitespace. Keys are global
-in this unauthenticated sandbox and retained indefinitely. Funding, payments and
-refunds use separate key namespaces. The internal ID `__simulation_issuer__` is reserved.
+in this unauthenticated sandbox and retained indefinitely. Funding, payments,
+refunds and webhook subscriptions use separate key namespaces. The internal ID `__simulation_issuer__` is reserved.
 
 | Request | Response |
 | --- | --- |
@@ -144,6 +144,103 @@ then journal UUID, with strict keyset boundaries handling equal timestamps. This
 is a live view rather than a cross-request snapshot: refresh the first page to see
 concurrent new commits. Existing immutable entries do not move between pages.
 
+## Merchant webhooks
+
+Subscribe **before** creating payments. Terminal events route to the original
+payment's destination account, including refunds: `payment.completed`,
+`payment.rejected`, `refund.completed`, and `refund.rejected`. Multiple active
+subscriptions fan out independently. There is no historical backfill or ordering
+guarantee.
+
+`POST /webhook-subscriptions` requires `Idempotency-Key` and JSON:
+
+```json
+{
+  "accountId": "merchant",
+  "url": "http://webhook-receiver:8081/webhooks",
+  "signingSecret": "replace-with-a-random-32-to-256-character-secret"
+}
+```
+
+A new subscription returns 201; identical replay returns 200, even when the ledger
+is unavailable or the URL was subsequently removed from policy. Changed fields
+under the same key return 409. New registrations validate the account through gRPC
+and require an exact operator-configured `WEBHOOK_ALLOWED_URLS` target (comma-separated).
+The application default is empty; Compose trusts only the demo receiver URL.
+Redirects are disabled and policy is checked again before each delivery. Configure
+only trusted operator-controlled hosts. Secrets are printable ASCII (no spaces),
+never returned by APIs, and stored in the private database; key rotation and secret
+encryption at rest are future work. The URL, account and key cannot be changed.
+
+| Request | Behavior |
+| --- | --- |
+| `GET /webhook-subscriptions/{id}` | Redacted subscription view |
+| `DELETE /webhook-subscriptions/{id}` | 204; soft-disable and cancel queued work, retaining audit |
+| `GET /webhook-subscriptions/{id}/deliveries?limit=20` | Most recent 1..100 deliveries; default 20 |
+| `GET /webhook-deliveries/{id}` | Current status and attempt count |
+| `GET /webhook-deliveries/{id}/attempts` | Ordered durable attempt audit |
+| `GET /webhook-events/{id}` | Exact persisted event JSON |
+
+Disabling serializes with event fanout and delivery completion. Already reserved
+in-flight attempts may still finish; failed ones cannot requeue after disabling.
+Replaying registration never reactivates a disabled subscription. Delivery listing
+is a recent audit view, not a paginated full export.
+
+**Protocol:** `Webhook-Id` is the stable event UUID. The exact UTF-8 JSON envelope
+contains `id`, `type`, `accountId`, `occurredAt`, `schemaVersion: 1`, and a `data`
+resource snapshot. Every attempt sends:
+
+```text
+Webhook-Signature: t=<Unix seconds>,v1=<lowercase HMAC-SHA256 hex>
+Webhook-Id: <event UUID>
+Webhook-Delivery-Id: <delivery UUID>
+Webhook-Subscription-Id: <subscription UUID>
+Webhook-Attempt: <attempt number>
+```
+
+Sign `timestamp + "." + raw_body` with the subscription secret. Verify the raw
+bytes before parsing JSON, compare signatures in constant time, reject stale
+timestamps, and persist the event ID with the merchant's business effect in one
+transaction before acknowledging. A lost acknowledgment causes duplicates.
+
+**Durability:** terminal resource updates, immutable event snapshots and delivery
+fanout commit in one PostgreSQL transaction. Delivery reservations commit before
+HTTP, with a fresh fencing token and a 30-second lease. HTTP has a two-second total
+deadline. Workers reclaim expired leases, mark their old attempts `ABANDONED`, and
+reject stale completions. A crash after reserving consumes an attempt even if no
+request reached the receiver. Default budget: five attempts, configurable 1..20,
+with persisted exponential backoff from 1 to 60 seconds. Only 2xx acknowledges;
+non-2xx/network failures retry, while removed URL policy fails permanently. Exhausted
+deliveries become `FAILED` for inspection; no operator replay endpoint exists yet.
+This provides bounded at-least-once attempts, not guaranteed receipt or exactly-once
+HTTP delivery. Money processing continues independently of receiver availability.
+
+### Local receiver and recovery demo
+
+The optional Python receiver verifies signatures with a 300-second timestamp
+tolerance and commits deduplicated SQLite receipts before acknowledging. Its
+`GET /events` shows the latest 100 receipts. Start it with a generated local secret:
+
+```sh
+# Create only if .env does not exist; keep this ignored file private.
+python3 - <<'PYSECRET'
+from pathlib import Path
+import secrets
+with Path('.env').open('x') as f:
+    f.write('WEBHOOK_DEMO_SECRET=' + secrets.token_hex(32) + '\nWEBHOOK_MAX_ATTEMPTS=8\n')
+PYSECRET
+docker compose --profile webhooks-demo up --build -d --wait
+python3 scripts/webhook_smoke.py
+```
+
+The demo uses eight attempts to allow time for cold process restarts. It stops the
+receiver, proves payment completion, restarts payment processing, recovers the
+notification, restarts the receiver, replays a signed duplicate, rejects tampering,
+and checks all four event types plus disabling. SQLite receipts survive receiver
+restarts through the `receiver_data` volume. This receiver demonstrates durable
+receipt deduplication; a real merchant must include its business changes in that
+same transaction. All endpoints remain an unauthenticated local sandbox.
+
 ## Design
 
 ```mermaid
@@ -158,6 +255,8 @@ flowchart LR
     RefundWorker[Refund worker] -->|claim pending refund| PDB
     RefundWorker -->|gRPC SubmitRefund| Ledger
     RefundWorker -->|persist refund outcome| PDB
+    PDB -->|atomic terminal outbox| Webhooks[Webhook worker]
+    Webhooks -->|signed HTTP, leased retries| Merchant[Merchant receiver]
 ```
 
 Each service owns a separate database and role. A single local PostgreSQL container
@@ -177,8 +276,9 @@ in-memory idempotency cache is involved.
 **Processing:** the committed PENDING row is also the durable work queue. A worker
 claims one due row with `FOR UPDATE SKIP LOCKED`, calls gRPC with a two-second
 deadline, and commits completion or terminal rejection. Each batch handles at most ten rows, with a
-250 ms delay between batches. The default single scheduler uses one of ten database
-connections, leaving capacity for the API. Multiple service instances can claim
+250 ms delay between batches. Three scheduler threads let payment, refund and
+webhook jobs progress independently, so slow callbacks do not block money processing.
+The database pool has ten connections, leaving capacity for API requests. Multiple service instances can claim
 different rows. Refunds use their own durable queue and the same locking/retry
 pattern. `PAYMENT_WORKER_ENABLED=false` disables both processors. Holding the row lock during the bounded RPC is a deliberate MVP
 tradeoff; higher throughput could justify leases or a broker.
@@ -230,7 +330,7 @@ Rejected refunds consume no refundable amount and create no reversal entries.
 | Local completion write fails after ledger commits | Local transaction rolls back; retry reuses the journal |
 | Ledger remains unavailable | Payment remains PENDING; persisted retry backoff grows from 1 to at most 60 seconds |
 
-Retries have no maximum count in this increment. Internal contract errors such as
+Payment and refund retries have no maximum count; webhook deliveries have a bounded budget. Internal contract errors such as
 changed fields under an existing ledger ID are logged as errors and retained pending
 for investigation. They are not mislabeled as a failed transfer after an ambiguous
 outcome. `attempt_count`, `next_attempt_at`, and `last_error` are stored in the
@@ -261,7 +361,12 @@ local completion rollback, opposing refund/transfer lock order, and immutable
 decisions. History tests cover tied timestamps, account-bound malformed cursors,
 page boundaries and refund links. The recovery smoke restarts the real process
 separately for pending payments and refunds, then traverses history pages.
-GitHub Actions runs the suites and full recovery smoke test.
+Webhook tests cover frozen outbox payloads, rollback, concurrent registration and
+claims, disable races, signature vectors, HTTP timeouts/redirects, lost acknowledgments,
+lease fencing and crash exhaustion. A blocked real HTTP receiver proves payment
+and refund scheduling remains independent. Six Python receiver tests cover signature
+validation, restart persistence, conflicting payloads and concurrent deduplication.
+GitHub Actions runs both suites and the money and webhook recovery smoke tests.
 
 Inspect ledger records without exposing a PostgreSQL host port:
 
@@ -288,10 +393,12 @@ For newly created accounts, spending cannot make the balance negative. Transfers
 and funding always preserve a zero net sum across all ledger entries, including
 the issuer. V3 adds refunds while preserving original journals; V4 corrects refund
 decision namespace checks without rewriting V3. Successful V2 payments remain
-refundable after upgrade. No spend reservations are implemented.
+refundable after upgrade. Payment-database V4 adds webhook outbox tables and V5
+serializes fanout with disabling; old terminal resources do not emit backfilled events. No spend reservations are implemented.
 
 `docker compose down` stops services and retains records. **Destructive reset:**
 `docker compose down -v` removes the project's database volume and all simulated
-payments. The SQL initialization runs only when that volume is first created.
+payments and demo receiver receipts. Use `--profile webhooks-demo` to stop the
+optional receiver too. The SQL initialization runs only when that volume is first created.
 The checked-in passwords are local simulation defaults. There is no authentication,
 authorization, rate limiting, or real processor integration.
