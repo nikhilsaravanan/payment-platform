@@ -24,7 +24,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import static org.assertj.core.api.Assertions.*;
 
 @Testcontainers
-@SpringBootTest(webEnvironment=SpringBootTest.WebEnvironment.RANDOM_PORT,properties="payments.worker.enabled=false")
+@SpringBootTest(webEnvironment=SpringBootTest.WebEnvironment.RANDOM_PORT,properties={"payments.worker.enabled=false","webhooks.worker.enabled=false","webhooks.allowed-urls=http://localhost:9999/hooks"})
 class AccountApiTest {
     @Container static final PostgreSQLContainer<?> DB=new PostgreSQLContainer<>("postgres:17-alpine");
     static Server server;
@@ -142,6 +142,33 @@ class AccountApiTest {
         worker.processOne();
         assertThat(json.readTree(http.getForObject("/accounts/"+from,String.class)).path("balanceMinor").asLong()).isZero();
         assertThat(json.readTree(http.getForObject("/accounts/"+to,String.class)).path("balanceMinor").asLong()).isEqualTo(500);
+    }
+
+    @Test void subscriptionReplayRedactsSecretAndDisableIsIdempotent() throws Exception {
+        String id=account(),key=UUID.randomUUID().toString(),secret="a".repeat(64);
+        String body="{\"accountId\":\""+id+"\",\"url\":\"http://localhost:9999/hooks\",\"signingSecret\":\""+secret+"\"}";
+        var first=post("/webhook-subscriptions",body,key);assertThat(first.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(first.getBody()).doesNotContain(secret,"signingSecret","idempotencyKey");
+        String path=first.getHeaders().getLocation().toString();
+        assertThat(post("/webhook-subscriptions",body,key).getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(post("/webhook-subscriptions",body.replace(secret,"b".repeat(64)),key).getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        http.delete(path);http.delete(path);
+        assertThat(json.readTree(http.getForObject(path,String.class)).path("active").asBoolean()).isFalse();
+        assertThat(json.readTree(post("/webhook-subscriptions",body,key).getBody()).path("active").asBoolean()).isFalse();
+        assertThat(http.getForEntity(path+"/deliveries",String.class).getBody()).isEqualTo("[]");
+    }
+
+    @Test void subscriptionRejectsUnapprovedCallbacksAndInvalidSecrets() throws Exception {
+        String id=account();
+        for(String url:List.of("http://example.com/hooks","http://localhost:9999/other","http://user@localhost:9999/hooks","http://localhost:9999/hooks?x=1","http://localhost:9999/hooks#fragment","file:///tmp/hook")) {
+            String body="{\"accountId\":\""+id+"\",\"url\":\""+url+"\",\"signingSecret\":\""+"a".repeat(64)+"\"}";
+            assertThat(post("/webhook-subscriptions",body,UUID.randomUUID().toString()).getStatusCode()).as(url).isEqualTo(HttpStatus.BAD_REQUEST);
+        }
+        String body="{\"accountId\":\""+id+"\",\"url\":\"http://localhost:9999/hooks\",\"signingSecret\":\"short\"}";
+        assertThat(post("/webhook-subscriptions",body,"bad-secret").getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(post("/webhook-subscriptions",body,null).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(post("/webhook-subscriptions",body.replace("short","x".repeat(256)),"max-secret").getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(post("/webhook-subscriptions",body.replace("short","x".repeat(257)),"too-long-secret").getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
     }
 
     ResponseEntity<String> post(String path,String body,String key) {

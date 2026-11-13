@@ -192,6 +192,19 @@ class PaymentRecoveryTest {
     @Test void unknownLedgerOutcomeStaysPending() throws Exception { assertMalformedOutcomeRetries(false); }
     @Test void responseForAnotherPaymentStaysPending() throws Exception { assertMalformedOutcomeRetries(true); }
 
+    @Test void outboxFailureRollsBackLocalCompletionThenReusesLedgerEffect() throws Exception {
+        start(ledgerRpc(),0);var p=create();
+        payments.execute("CREATE FUNCTION fail_outbox() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected outbox failure'; END $$");
+        payments.execute("CREATE TRIGGER injected_outbox_failure BEFORE INSERT ON webhook_events FOR EACH ROW EXECUTE FUNCTION fail_outbox()");
+        try {
+            assertThatThrownBy(()->worker().processOne()).isInstanceOf(RuntimeException.class);
+            assertThat(store.get(p.id()).status()).isEqualTo("PENDING");
+            assertThat(payments.queryForObject("SELECT count(*) FROM webhook_events WHERE resource_id=?",Long.class,p.id())).isZero();
+        } finally {payments.execute("DROP TRIGGER injected_outbox_failure ON webhook_events");payments.execute("DROP FUNCTION fail_outbox()");}
+        worker().processOne();assertOneJournal(p);
+        assertThat(payments.queryForObject("SELECT count(*) FROM webhook_events WHERE resource_id=?",Long.class,p.id())).isEqualTo(1);
+    }
+
     void assertMalformedOutcomeRetries(boolean wrongId) throws Exception {
         start(new LedgerGrpc.LedgerImplBase() {
             @Override public void submitTransfer(Transfer request,StreamObserver<TransferResult> response) {
