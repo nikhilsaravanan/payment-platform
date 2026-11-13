@@ -94,4 +94,25 @@ class WebhookOutboxTest {
             assertThat(created).isEqualTo(1);assertThat(ids).hasSize(1);
         }
     }
+
+    @Test void registrationReplayDoesNotDependOnCurrentTargetPolicy() {
+        var original=subscribe("policy-replay").subscription();
+        var changedPolicy=new WebhookSubscriptions(jdbc,tx,new WebhookTargets(""));
+        assertThat(changedPolicy.create("policy-replay","merchant",URL,SECRET).subscription()).isEqualTo(original);
+        assertThatThrownBy(()->changedPolicy.create("new-policy-key","merchant",URL,SECRET)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test void disableSerializesWithUncommittedFanout() throws Exception {
+        var sub=subscribe("fanout-race").subscription();var p=pending();
+        var inserted=new CountDownLatch(1);var release=new CountDownLatch(1);
+        try(var pool=Executors.newFixedThreadPool(2)) {
+            var fanout=pool.submit(()->tx.executeWithoutResult(s->{complete(p);inserted.countDown();try{release.await(5,TimeUnit.SECONDS);}catch(InterruptedException e){throw new IllegalStateException(e);}}));
+            assertThat(inserted.await(3,TimeUnit.SECONDS)).isTrue();
+            var disabling=pool.submit(()->subscriptions.disable(sub.id()));
+            try {assertThatThrownBy(()->disabling.get(300,TimeUnit.MILLISECONDS)).isInstanceOf(TimeoutException.class);}
+            finally {release.countDown();}
+            fanout.get(5,TimeUnit.SECONDS);disabling.get(5,TimeUnit.SECONDS);
+            assertThat(jdbc.queryForObject("SELECT status FROM webhook_deliveries WHERE subscription_id=?",String.class,sub.id())).isEqualTo("CANCELED");
+        }
+    }
 }

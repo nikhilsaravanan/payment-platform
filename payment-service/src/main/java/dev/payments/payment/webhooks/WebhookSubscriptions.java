@@ -20,16 +20,25 @@ public class WebhookSubscriptions {
         rs.getTimestamp("disabled_at")==null?null:rs.getTimestamp("disabled_at").toInstant());
     public WebhookSubscriptions(JdbcTemplate jdbc,TransactionTemplate tx,WebhookTargets targets){this.jdbc=jdbc;this.tx=tx;this.targets=targets;}
 
+    /** Replays durable identity before consulting dependencies or today's target policy. */
+    public Subscription replay(String key,String account,String url,String secret) {
+        var rows=jdbc.query("SELECT * FROM webhook_subscriptions WHERE idempotency_key=?",MAPPER,key);
+        if(rows.isEmpty())return null;
+        var row=rows.getFirst();
+        String stored=jdbc.queryForObject("SELECT signing_secret FROM webhook_subscriptions WHERE id=?",String.class,row.id());
+        if(!row.accountId().equals(account) || !WebhookTargets.parse(row.url()).equals(WebhookTargets.parse(url))
+            || !MessageDigest.isEqual(stored.getBytes(StandardCharsets.UTF_8),secret.getBytes(StandardCharsets.UTF_8)))throw new Conflict();
+        return row;
+    }
     public Created create(String key,String account,String url,String secret) {
+        var existing=replay(key,account,url,secret);
+        if(existing!=null)return new Created(existing,false);
         String canonical=targets.requireAllowed(url).toASCIIString();
         return tx.execute(s->{
             int inserted=jdbc.update("INSERT INTO webhook_subscriptions(id,idempotency_key,account_id,url,signing_secret) VALUES (?,?,?,?,?) ON CONFLICT (idempotency_key) DO NOTHING",
                 UUID.randomUUID(),key,account,canonical,secret);
-            var row=jdbc.queryForObject("SELECT * FROM webhook_subscriptions WHERE idempotency_key=?",MAPPER,key);
-            String stored=jdbc.queryForObject("SELECT signing_secret FROM webhook_subscriptions WHERE id=?",String.class,row.id());
-            if(!row.accountId().equals(account) || !row.url().equals(canonical)
-                || !MessageDigest.isEqual(stored.getBytes(StandardCharsets.UTF_8),secret.getBytes(StandardCharsets.UTF_8)))throw new Conflict();
-            return new Created(row,inserted==1);
+            // Separate READ COMMITTED statement sees the concurrent winner after INSERT waits.
+            return new Created(replay(key,account,canonical,secret),inserted==1);
         });
     }
     public Subscription get(UUID id) {

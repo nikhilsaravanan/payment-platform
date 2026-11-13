@@ -150,6 +150,11 @@ class AccountApiTest {
         var first=post("/webhook-subscriptions",body,key);assertThat(first.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         assertThat(first.getBody()).doesNotContain(secret,"signingSecret","idempotencyKey");
         String path=first.getHeaders().getLocation().toString();
+        unavailable.set(true);
+        try {
+            assertThat(post("/webhook-subscriptions",body,key).getStatusCode()).isEqualTo(HttpStatus.OK);
+            assertThat(post("/webhook-subscriptions",body.replace(id,UUID.randomUUID().toString()),key).getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        } finally {unavailable.set(false);}
         assertThat(post("/webhook-subscriptions",body,key).getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(post("/webhook-subscriptions",body.replace(secret,"b".repeat(64)),key).getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
         http.delete(path);http.delete(path);

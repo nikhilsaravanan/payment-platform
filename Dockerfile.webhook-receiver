@@ -1,0 +1,6 @@
+FROM python:3.12-alpine
+WORKDIR /app
+RUN addgroup -S app && adduser -S -G app app && mkdir /data && chown app:app /data
+COPY examples/webhook_receiver.py /app/server.py
+USER app
+CMD ["python3", "/app/server.py"]

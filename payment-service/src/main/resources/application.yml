@@ -1,4 +1,8 @@
 spring:
+  task:
+    scheduling:
+      pool:
+        size: 3
   application:
     name: payment-service
   flyway:
@@ -35,3 +39,11 @@ payments:
   worker:
     enabled: ${PAYMENT_WORKER_ENABLED:true}
     poll-millis: ${PAYMENT_POLL_MILLIS:250}
+webhooks:
+  allowed-urls: ${WEBHOOK_ALLOWED_URLS:}
+  max-attempts: ${WEBHOOK_MAX_ATTEMPTS:5}
+  lease-millis: ${WEBHOOK_LEASE_MILLIS:30000}
+  timeout-millis: ${WEBHOOK_TIMEOUT_MILLIS:2000}
+  poll-millis: ${WEBHOOK_POLL_MILLIS:250}
+  worker:
+    enabled: ${WEBHOOK_WORKER_ENABLED:true}

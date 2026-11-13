@@ -25,7 +25,7 @@ import static org.assertj.core.api.Assertions.*;
 
 @Testcontainers
 @SpringBootTest(webEnvironment=SpringBootTest.WebEnvironment.RANDOM_PORT,
-    properties={"payments.worker.enabled=false","ledger.deadline-millis=10000"})
+    properties={"payments.worker.enabled=false","webhooks.worker.enabled=false","ledger.deadline-millis=10000"})
 class RefundApiTest {
     @Container static final PostgreSQLContainer<?> DB=new PostgreSQLContainer<>("postgres:17-alpine");
     static Server server;

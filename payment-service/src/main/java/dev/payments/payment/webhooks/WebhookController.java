@@ -26,6 +26,8 @@ public class WebhookController {
     public ResponseEntity<WebhookSubscriptions.Subscription> create(@RequestHeader("Idempotency-Key") String key,@Valid @RequestBody Subscribe request) {
         if(!key.matches("[\\x21-\\x7E][\\x20-\\x7E]{0,199}") || request.accountId().equals("__simulation_issuer__"))
             throw new IllegalArgumentException("Invalid subscription request");
+        var existing=subscriptions.replay(key,request.accountId(),request.url(),request.signingSecret());
+        if(existing!=null)return ResponseEntity.ok().location(URI.create("/webhook-subscriptions/"+existing.id())).body(existing);
         targets.requireAllowed(request.url());ledger.getAccount(request.accountId());
         var created=subscriptions.create(key,request.accountId(),request.url(),request.signingSecret());
         return ResponseEntity.status(created.inserted()?201:200).location(URI.create("/webhook-subscriptions/"+created.subscription().id())).body(created.subscription());

@@ -15,7 +15,7 @@ public class WebhookTargets {
         var target=allowed.get(parse(value));
         if(target==null)throw new IllegalArgumentException("Callback URL is not approved");return target;
     }
-    private static URI parse(String value) {
+    static URI parse(String value) {
         if(value==null || value.length()>2048)throw new IllegalArgumentException("Invalid callback URL");
         URI uri=URI.create(value).normalize();String scheme=uri.getScheme();
         if(scheme==null || !(scheme.equalsIgnoreCase("http") || scheme.equalsIgnoreCase("https")) || uri.getHost()==null

@@ -17,13 +17,24 @@ jobs:
           cache: maven
       - name: Unit and PostgreSQL integration tests
         run: mvn -B -ntp verify
+      - name: Receiver signature and persistence tests
+        run: python3 -m unittest discover -s examples -p 'test_webhook_receiver.py'
+      - name: Configure ephemeral webhook demo
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import secrets
+          Path('.env').write_text('WEBHOOK_DEMO_SECRET=' + secrets.token_hex(32) + '\nWEBHOOK_MAX_ATTEMPTS=8\n')
+          PY
       - name: Build and start services
-        run: docker compose up --build -d --wait --wait-timeout 120
+        run: docker compose --profile webhooks-demo up --build -d --wait --wait-timeout 120
       - name: API and restart recovery smoke tests
         run: python3 scripts/smoke.py --recovery
+      - name: Signed webhook outage, restart and duplicate delivery smoke
+        run: python3 scripts/webhook_smoke.py
       - name: Service logs
         if: failure()
-        run: docker compose logs --no-color
+        run: docker compose --profile webhooks-demo logs --no-color
       - name: Stop services
         if: always()
-        run: docker compose down
+        run: docker compose --profile webhooks-demo down
