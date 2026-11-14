@@ -32,6 +32,8 @@ jobs:
         run: python3 scripts/smoke.py --recovery
       - name: Signed webhook outage, restart and duplicate delivery smoke
         run: python3 scripts/webhook_smoke.py
+      - name: Simulated processor reconciliation and report restart smoke
+        run: python3 scripts/reconciliation_smoke.py
       - name: Service logs
         if: failure()
         run: docker compose --profile webhooks-demo logs --no-color

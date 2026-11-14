@@ -11,12 +11,13 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 import org.springframework.dao.DataAccessException;
 import io.grpc.StatusRuntimeException;
 import dev.payments.payment.webhooks.WebhookSubscriptions;
+import dev.payments.payment.reconciliation.ReconciliationStore;
 
 @RestControllerAdvice
 public class ApiErrors {
     private static final Logger log=LoggerFactory.getLogger(ApiErrors.class);
     record Error(String code,String message) {}
-    @ExceptionHandler({PaymentStore.Conflict.class,RefundStore.Conflict.class,WebhookSubscriptions.Conflict.class})
+    @ExceptionHandler({PaymentStore.Conflict.class,RefundStore.Conflict.class,WebhookSubscriptions.Conflict.class,ReconciliationStore.Conflict.class})
     ResponseEntity<Error> conflict() { return error(409,"IDEMPOTENCY_CONFLICT","Key already used with different request fields"); }
     @ExceptionHandler(PaymentStore.NotFound.class)
     ResponseEntity<Error> notFound() { return error(404,"PAYMENT_NOT_FOUND","Payment not found"); }
@@ -24,6 +25,8 @@ public class ApiErrors {
     ResponseEntity<Error> refundNotFound() {return error(404,"REFUND_NOT_FOUND","Refund not found");}
     @ExceptionHandler(RefundStore.NotRefundable.class)
     ResponseEntity<Error> notRefundable() {return error(409,"PAYMENT_NOT_COMPLETED","Payment must complete before refunding");}
+    @ExceptionHandler(ReconciliationStore.NotFound.class)
+    ResponseEntity<Error> reconciliationNotFound(){return error(404,"RECONCILIATION_NOT_FOUND","Reconciliation report not found");}
     @ExceptionHandler(WebhookSubscriptions.NotFound.class)
     ResponseEntity<Error> webhookNotFound(){return error(404,"WEBHOOK_NOT_FOUND","Webhook resource not found");}
     @ExceptionHandler({MethodArgumentNotValidException.class,MissingRequestHeaderException.class,
